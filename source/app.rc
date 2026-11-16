@@ -1,0 +1,33 @@
+#include <winuser.h>
+#include <winver.h>
+1 RT_MANIFEST "app.manifest"
+1 ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,5,0,0
+PRODUCTVERSION  1,5,0,0
+FILEFLAGSMASK   0x3F
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "blamesociety"
+      VALUE "FileDescription",  "ns2dig - browser for Nintendo Switch 2 game data"
+      VALUE "FileVersion",      "1.5.0.0"
+      VALUE "InternalName",     "ns2dig"
+      VALUE "LegalCopyright",   "(c) 2026 blamesociety. Personal use. Includes Zstandard (BSD licence)."
+      VALUE "OriginalFilename", "ns2dig.exe"
+      VALUE "ProductName",      "ns2dig"
+      VALUE "ProductVersion",   "1.5.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

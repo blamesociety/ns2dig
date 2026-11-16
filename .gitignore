@@ -1,0 +1,21 @@
+# Build output
+*.o
+*.a
+*.exe
+*.pdb
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# The app's own files when run from here
+ns2dig.ini
+output/
+search_cache/
+/ns2dig.py
+
+# Generated demo ROM (shipped in the release zip) and the built ADPCM tool
+demo/base/
+demo/tools/dspadpcm_enc
+demo/tools/dspadpcm_enc.exe
