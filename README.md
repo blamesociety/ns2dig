@@ -35,6 +35,64 @@ the first time, then builds `ns2dig.exe` in the top folder and copies `ns2dig.py
 
 To rebuild the demo ROM, see `demo/README.txt`.
 
+## Trying the demo ROM
+
+The release zip includes a `demo` folder: a small made-up island world stored in the same file formats
+as a real game, so you can try every viewer without a game dump.
+
+**Set up (once)**
+
+1. Install Python 3 from [python.org](https://www.python.org) and tick **Add python.exe to PATH**. With
+   Python 3.13 or older, also run `pip install zstandard` in a command prompt. Python 3.14 and newer need
+   nothing else.
+2. Unzip `ns2dig.zip` anywhere. Keep `ns2dig.exe` and `ns2dig.py` in the same folder.
+
+**Extract the demo**
+
+3. Start `ns2dig.exe`.
+4. Next to **Game folder**, click **Browse...** and choose the `demo` folder beside `ns2dig.exe`.
+5. Type a **Scan name**, for example `Demo`, and click **Extract**. It takes a few seconds, and the app
+   recognises the scan as **ns2dig demo**.
+
+**View it**
+
+6. Click **Bookmarks** to go straight to the highlights. Each one opens its file in the tree; then click
+   the button above the viewer, or double-click the file, to open its viewer.
+   - **Island** – the whole 3 km terrain in 3D. Right-click the ground and choose **Open this area in
+     full detail** for a closer look. Press **T** for a top view.
+   - **Player model** – pick **Idle**, **Walk**, **Wave**, **Blink** or **Talk** in the animation list
+     and press **Play**. Try the shirt colours in the **Colours** list.
+   - **Crate model**, **Flag (cloth)**, **Voxel rock arch**, **Collision**
+   - **Seagulls (video)** and **Music: Golden Tides**
+   - **Title screen (layout)** – switch between English, French, German and Spanish, and play the
+     animations.
+   - **Font: DemoBeads** and **Font: DemoBlocks**
+   - **Lighting** – compare the default, Sunset, Night and Storm setups.
+   - **Events** – a conversation with an islander and an arrival cutscene with a timeline.
+7. Browse the rest in the tree on the left, or use **Search** to find text across the whole scan.
+   `base\exefs` holds the program files (`main`, `main.npdm`, `rtld` and `sdk`).
+
+**Export it**
+
+8. Everything you extract is already saved as readable JSON files, one per game file, in
+   `output\<scan name>\` next to `ns2dig.exe`. Click **Show in Explorer** to open that folder.
+9. The viewers can also save what they show in everyday formats:
+
+| What | Button | Saves as | Opens in |
+|---|---|---|---|
+| 3D models, terrain, collision, voxels | **Export 3D file** | **GLB** (one file with its textures), **OBJ** (with a .mtl and PNG textures), **PLY** (with vertex colours) or **STL** (for 3D printing) | Blender, Windows 3D Viewer, Unity, Unreal, Godot, MeshLab, slicers |
+| The 3D view as you see it | **Export PNG** | PNG image | any image viewer |
+| Textures | **Save PNG...** or **Save all listed as PNG...** | PNG images | any image editor |
+| Layouts (UI screens) | **Save view as PNG...** | PNG image | any image viewer |
+| Videos | **Export video...** | the original WebM (VP9), not re-encoded | VLC, web browsers |
+| Videos (one frame) | **Save frame as PNG...** | PNG image | any image viewer |
+| Music and sound effects | **Save as WAV...** | WAV audio | any audio player or editor |
+| Files and folders | right-click → **Create ZIP of this folder / file** | ZIP of the extracted JSON | |
+
+3D exports are always in the model's resting pose, not the current animation frame.
+
+`demo/README.txt` lists everything in the demo and where to find it.
+
 ## Legal
 
 ns2dig contains no Nintendo code and no game content. Every file reader was written from scratch by
