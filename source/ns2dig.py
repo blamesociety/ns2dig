@@ -459,13 +459,26 @@ def read_nso(b):
         raise ValueError("not NSO")
     version, _r, flags = struct.unpack_from("<III", b, 4)
     segs = []
+    zbic_missing = False
     for i, name in enumerate(("text", "ro", "data")):
         foff, moff, size = struct.unpack_from("<III", b, 0x10 + i * 0x10)
         csize = struct.unpack_from("<I", b, 0x60 + i * 4)[0]
         raw = b[foff:foff + (csize if flags & (1 << i) else size)]
-        data = lz4_block_decompress(raw, size) if flags & (1 << i) else raw
+        method = "none"
+        if not flags & (1 << i):
+            data = raw
+        elif raw[:4] == b"ZBIC":
+            # ZBIC (newer games, system 22.0+): zstd with a different magic and table coding - needs the zbic package
+            method = "ZBIC"
+            try:
+                import zbic
+                data = zbic.decompress(bytes(raw))
+            except ImportError:
+                zbic_missing, data = True, b""
+        else:
+            method, data = "LZ4", lz4_block_decompress(raw, size)
         segs.append((name, moff, data, csize, bool(flags & (1 << i)), bool(flags & (8 << i)),
-                     b[0xA0 + i * 32:0xC0 + i * 32].hex()))
+                     b[0xA0 + i * 32:0xC0 + i * 32].hex(), method, size))
     bss = struct.unpack_from("<I", b, 0x3C)[0]
     build_id = b[0x40:0x60].hex().upper()
     while build_id.endswith("00") and len(build_id) > 40:
@@ -487,10 +500,14 @@ def read_nso(b):
             out["module_path"] = path
     out["build_id"] = build_id
     out["nso_version"] = version
-    out["segments"] = {s[0]: {"memory_offset": "0x%X" % s[1], "size": len(s[2]),
-                              "compressed_size": s[3] if s[4] else len(s[2]), "compressed": s[4],
+    out["segments"] = {s[0]: {"memory_offset": "0x%X" % s[1], "size": s[8],
+                              "compressed_size": s[3] if s[4] else s[8], "compression": s[7],
                               "hash_checked": s[5], "sha256": s[6]} for s in segs}
     out["bss_size"] = bss
+    if zbic_missing:
+        out["_warning"] = ("This program file is compressed with ZBIC (used by newer games). To decode its strings, "
+                           "functions and SDK versions, run  pip install zbic  in a command prompt and extract again.")
+        return out
     # SDK / middleware ("SDK MW+Vendor+Name-Version-Build")
     mw = []
     for m in re.finditer(rb"SDK MW\+[\x21-\x7e]+", ro):
@@ -655,6 +672,7 @@ def read_npdm(b):
 #               between = surface), bytes 1-2 material ids (MaterialTable.bin), the rest unknown
 #   e (edges):  9 bytes per voxel  - probably surface crossings on the voxel's 3 edges + their normals
 SPECIAL_EXTS = ("vgeob", "bphsh", "bflan", "bflyt", "bntx", "npdm", "bars", "bwav", "bnvib", "bfttf", "bfotf", "bfcpx", "bffnt", "bfres", "asb", "baev", "bfevfl", "bnsh", "sharcb", "bfsha", "gsh", "pck", "bphcl", "bphsc", "baglcube", "baglfila", "msbp", "bphhb", "baatn", "baroc", "baudc", "baacl", "bprojgfxbase", "bssprojgfxbase", "baglblm", "bagldof", "baglccr", "baglenv", "baglenvset", "baglsky", "baglshpp", "bgenv", "listing", "rsizetable", "bgapkginfo", "bgapkglist", "bgmsconf", "bptclconf", "bagst", "belnk", "bslnk", "bgsdw", "baglvolm", "baglmf", "bofx", "bushvt", "bin", "raw", "glsl", "hght", "norm", "mate", "extm", "tscb", "ainb", "ghost", "bcul", "bbox", "bgrd", "dapg", "pccg", "dalp", "dlpl", "dlpa", "dlpg", "dlpr", "bkls", "dcgm", "xtx", "sharc", "baatarc")
+SPECIAL_EXTS = set(SPECIAL_EXTS) | {"dat", "gswg", "bwr", "bkprmb", "bkprb", "bkprcb", "otf", "win", "tree3", "rs", "csv", "txt2"}   # (NSSR)
 VOXEL_FILES = ("info.bin", "vhead.bin", "vbody.bin", "ehead.bin", "ebody.bin", "materialtable.bin")
 # MaterialTable.bin (in the stage scenario folder): u16 version, u16 count, then count x 40-byte names.
 # A voxel's material id is an index into this list.
@@ -711,6 +729,11 @@ def voxel_blocks(body, decomp):
 
 
 # ---------- other formats identified by name + contents ----------
+def _printable(t):
+    """text safe for the log: control characters (a NUL cuts the app's log off) shown as \\xNN"""
+    return "".join(c if c >= " " or c in "\t" else "\\x%02x" % ord(c) for c in t)
+
+
 def _ext(label):
     n = label.rsplit("/", 1)[-1].lower()
     if n.endswith(".zs"): n = n[:-3]
@@ -1339,12 +1362,18 @@ def _phive_mesh_at(hk, b, ti, base):
 
 def _phive_hull_at(hk, b, ti, base):
     """convex hull (box / convex polytope) -> (verts, tris) with local tag 0"""
-    ho, _ = _member(hk, ti, "hull")
+    ho, ht = _member(hk, ti, "hull")
     arr = []
     for k in range(4):                                # vertices, planes, faces, indices (hkRelArrayView)
         off, cnt = struct.unpack_from("<iI", b, base + ho + k * 8); arr.append((base + ho + k * 8 + off, cnt))
     (va, vn), _, (fa, fn), (ia, inn) = arr
-    verts = [struct.unpack_from("<3f", b, va + i * 16) for i in range(vn)]
+    vstep = 16                                        # hkVector4; Havok 2025 (Switch Sports...) stores hkFloat3 = 12 bytes
+    try:
+        _, vt = _member(hk, ht, "vertices")
+        st = hk.T[vt].get("subtype")
+        if st and hk.T[st].get("name") == "hkFloat3": vstep = 12
+    except Exception: pass
+    verts = [struct.unpack_from("<3f", b, va + i * vstep) for i in range(vn)]
     tris = []
     for f in range(fn):
         first, num = struct.unpack_from("<HB", b, fa + f * 4)
@@ -1735,9 +1764,14 @@ def read_bphsc(b):
                     "instance to an actor in the level's placement data."}
     out["havok_sdk"] = hk.sdk
     root = hk.read(*m["root"], big=1)
-    if "aabb" in root:
-        out["bounds_min"] = [round(x, 3) for x in root["aabb"]["min"][:3]]
-        out["bounds_max"] = [round(x, 3) for x in root["aabb"]["max"][:3]]
+    ab = root.get("aabb") if isinstance(root, dict) else None
+    if isinstance(ab, dict) and "min" in ab:
+        out["bounds_min"] = [round(x, 3) for x in ab["min"][:3]]
+        out["bounds_max"] = [round(x, 3) for x in ab["max"][:3]]
+    elif isinstance(ab, dict) and isinstance(ab.get("minMax"), dict):     # Havok 2025: first = min, sec = max
+        mm = ab["minMax"]
+        out["bounds_min"] = [round(mm.get("first" + c, 0.0), 3) for c in "XYZ"]
+        out["bounds_max"] = [round(mm.get("sec" + c, 0.0), 3) for c in "XYZ"]
     out["instances"] = len(inst)
     per_type = {}
     for x in inst: per_type[x["shape_type"]] = per_type.get(x["shape_type"], 0) + 1
@@ -2837,7 +2871,7 @@ def read_bfevfl(b):
         def aname(i): return actors[i]["name"] if 0 <= i < len(actors) else "actor%d" % i
         events = []
         for i in range(nev):
-            e = u64(o + 0x30) + 0x28 * i
+            e = u64(o + 0x30) + ev_size * i
             t = u8(e + 8); ev = {"index": i, "name": s(u64(e))}
             def nxt(x): return None if x == 0xFFFF else x
             if t == 0:
@@ -2860,6 +2894,13 @@ def read_bfevfl(b):
             elif t == 4:
                 ev.update({"type": "sub_flow", "flowchart": s(u64(e + 0x18)) or "(this file)", "entry_point": s(u64(e + 0x20)), "next": nxt(u16(e + 0xA))})
                 if u64(e + 0x10): ev["params"] = container(u64(e + 0x10))
+            elif t == 5:                        # version 4: run a sub-flow, then branch on the value it returns
+                nc, c = u16(e + 0xA), u64(e + 0x18)
+                ev.update({"type": "sub_flow_switch", "flowchart": s(u64(e + 0x20)) or "(this file)", "entry_point": s(u64(e + 0x28))})
+                if u64(e + 0x10): ev["params"] = container(u64(e + 0x10))
+                ev["cases"] = {_evfl_val(u32(c + 8 * j)): u16(c + 8 * j + 4) for j in range(nc)}
+            elif t == 6:                        # version 4: end this sub-flow, returning a value
+                ev.update({"type": "return", "value": _evfl_val(u32(e + 0xC))})
             else:
                 ev["type"] = "unknown (%d)" % t
             events.append(ev)
@@ -2911,6 +2952,7 @@ def read_bfevfl(b):
         if u64(o + 0x58): t["params"] = container(u64(o + 0x58))
         return t
     nfc, ntl = u16(0x20), u16(0x22)
+    ev_size = 0x30 if b[9] >= 4 else 0x28       # version 4 (Switch Sports...) events are 8 bytes longer
     out = {"_binary_format": "BFEVFL event flow (version %d.%d)" % (b[9], b[10]),
            "_note": "An event script: flowcharts of actions (actor.action with parameters), switches (actor.query -> a branch "
                     "per answer), forks/joins and calls to other flows, started from named entry points; 'script' lists each "
@@ -2925,6 +2967,14 @@ def read_bfevfl(b):
     return out
 
 def _evfl_nxt(x): return None if x == 0xFFFF else x
+
+def _evfl_fnv(t):
+    h = 0x811C9DC5
+    for c in t.encode(): h = ((h ^ c) * 0x01000193) & 0xFFFFFFFF
+    return h
+# version 4 sub-flows return a value as the FNV-1a hash of its text ("1" / "0" for yes / no)
+_EVFL_VALS = {_evfl_fnv(t): t for t in ["true", "false", "True", "False", "None", ""] + [str(i) for i in range(-16, 256)]}
+def _evfl_val(h): return _EVFL_VALS.get(h, "0x%08X" % h)
 
 def _evfl_pv(v):
     if isinstance(v, dict): return "{" + ", ".join("%s=%s" % (k, _evfl_pv(x)) for k, x in v.items()) + "}"
@@ -2962,6 +3012,13 @@ def _evfl_script(events, start, limit=4000):
                 i = e["next"]
             elif t == "sub_flow":
                 lines.append(ind + "%s: run %s : %s%s" % (e["name"], e["flowchart"], e["entry_point"], p if p != "()" else "")); i = e["next"]
+            elif t == "sub_flow_switch":
+                lines.append(ind + "%s: run %s : %s%s and switch on its result" % (e["name"], e["flowchart"], e["entry_point"], p if p != "()" else ""))
+                for val, tgt in e["cases"].items():
+                    lines.append(ind + "  result %s:" % val); walk(tgt, ind + "    ")
+                return
+            elif t == "return":
+                lines.append(ind + "%s: return %s" % (e["name"], e["value"])); return
             else:
                 lines.append(ind + "%s: %s" % (e["name"], t)); return
         if i is None and not branch and len(lines) < limit: lines.append(ind + "end")
@@ -4689,12 +4746,245 @@ def read_sharc_aahs(b):
                      "converted from Shift-JIS). 'programs' lists the program and its uniform names.",
             "version": ver, "name": name, "programs": progs, "sources": srcs}
 
+# ---------- Nintendo Switch Sports Resort (NSSR) and other newer-game formats ----------
+_MII_FIELDS = ("font_region", "favorite_color", "gender", "height", "build", "type", "region_move", "faceline_type",
+               "faceline_color", "faceline_wrinkle", "faceline_make", "hair_type", "hair_color", "hair_flip", "eye_type",
+               "eye_color", "eye_scale", "eye_aspect", "eye_rotate", "eye_x", "eye_y", "eyebrow_type", "eyebrow_color",
+               "eyebrow_scale", "eyebrow_aspect", "eyebrow_rotate", "eyebrow_x", "eyebrow_y", "nose_type", "nose_scale",
+               "nose_y", "mouth_type", "mouth_color", "mouth_scale", "mouth_aspect", "mouth_y", "beard_color", "beard_type",
+               "mustache_type", "mustache_scale", "mustache_y", "glass_type", "glass_color", "glass_scale", "glass_y",
+               "mole_type", "mole_scale", "mole_x", "mole_y")
+
+
+def read_mii_charinfo(b):
+    """a Mii as the Switch stores it (nn::mii::CharInfo, 0x58 bytes): id, nickname, then one byte per feature"""
+    nick = b[0x10:0x26].decode("utf-16-le", "replace").split("\0")[0]
+    out = {"_binary_format": "Mii character (Switch CharInfo, 88 bytes)",
+           "_note": "One Mii: its id, nickname and every face / body setting as the Mii editor numbers them (gender 0 = male, "
+                    "1 = female; height and build 0-127). The file's first bytes are the Mii's random id, which is why "
+                    "some of these files look like they have a header tag (Az, 7O8D, reMM...).",
+           "create_id": b[0:16].hex(), "nickname": nick}
+    for i, k in enumerate(_MII_FIELDS):
+        out[k] = b[0x26 + i]
+    out["gender"] = {0: "male", 1: "female"}.get(b[0x28], b[0x28])
+    return out
+
+
+def read_gswg(b):
+    """golf swing replay: u32 frame count, then 2 floats per frame"""
+    n = struct.unpack_from("<I", b, 0)[0]
+    if 4 + 8 * n != len(b): raise ValueError("frame count doesn't match the size")
+    fr = [struct.unpack_from("<2f", b, 4 + 8 * i) for i in range(n)]
+    a = [x[0] for x in fr]; c = [x[1] for x in fr]
+    pk = max(range(n), key=lambda i: c[i]) if n else 0
+    return {"_binary_format": "Golf swing replay (.gswg)",
+            "_note": "A recorded golf swing: two numbers per frame (60 frames a second). Their exact meaning isn't known "
+                     "yet - the first looks like the club's position through the swing (about 0.5 at rest), the second "
+                     "like its speed (it peaks at the moment of the swing).",
+            "frames": n, "seconds_at_60fps": round(n / 60, 2),
+            "value1_range": [round(min(a), 5), round(max(a), 5)] if n else None,
+            "value2_range": [round(min(c), 5), round(max(c), 5)] if n else None,
+            "value2_peak_frame": pk,
+            "frame_values": [[round(x, 6), round(y, 6)] for x, y in fr]}
+
+
+def _bwr_name(nm):
+    out = {}
+    for t in nm.split("_")[1:]:
+        m = re.match(r"([A-Za-z]+)(\d+)$", t)
+        if m: out[m.group(1)] = int(m.group(2))
+        elif t.isdigit(): out["throw"] = int(t)
+    return out
+
+
+def read_bwr(b, label):
+    """bowling replay (attract-mode 'AutoPlay' throws): header, the 10 pins' standing flags, key frames"""
+    ver, frames, f0, z = struct.unpack_from("<IIfI", b, 0)
+    pins = list(b[16:26])
+    o = b.find(struct.pack("<I", frames), 26)
+    keys = list(struct.unpack_from("<5I", b, o - 8)) if 34 <= o and o + 12 <= len(b) else None
+    nm = label.rsplit("/", 1)[-1].split(".")[0]
+    out = {"_binary_format": "Bowling replay (.bwr)",
+           "_note": "A recorded bowling throw (BowlingReplay/lane<n>/AutoPlay_...: the throws the game plays by itself). "
+                    "Decoded: the header and the 10 pins' flags; the frame-by-frame ball and pin movement after them "
+                    "isn't decoded yet. The file name gives the lane, throw, total, pitch and pin set.",
+           "name_parts": _bwr_name(nm),
+           "version_or_id": ver, "frames": frames, "seconds_at_60fps": round(frames / 60, 2),
+           "header_value": round(f0, 6), "pins_flags": pins}
+    if keys: out["key_frames"] = keys
+    return out
+
+
+def read_probe_meta(b):
+    """.bkprmb: the baked light-probe grid of one scene - where it starts, the block size and how many blocks"""
+    f = struct.unpack_from("<4f", b, 0x10); n = struct.unpack_from("<3I", b, 0x20)
+    rest = [x for x in struct.unpack_from("<%dI" % ((len(b) - 0x2C) // 4), b, 0x2C)]
+    return {"_binary_format": "Baked light probes - scene info (.bkprmb)",
+            "_note": "The light-probe grid of one scene (Bake/Probe/Scene/<scene>/): the grid's corner, the size of one "
+                     "block and how many blocks there are in x, y and z - one X<x>_Y<y>_Z<z>_<n>.bkprb file each. "
+                     "resident.bkprcb holds the coarse probes kept loaded all the time. The other numbers aren't named yet.",
+            "version": struct.unpack_from("<I", b, 0)[0], "origin": [round(f[0], 3), round(f[1], 3), round(f[2], 3)],
+            "block_size": round(f[3], 3), "blocks_xyz": list(n), "other_values": rest}
+
+
+def read_probe_block(b, ext):
+    """.bkprb / .bkprcb: light-probe cells - each names its 8 corner probes, then its place and size in the block"""
+    n = struct.unpack_from("<I", b, 0x10)[0]
+    if not 0 < n < 1000000 or 0x14 + 48 * n > len(b): raise ValueError("cell count %d doesn't fit" % n)
+    cells = []
+    for i in range(min(n, 2000)):
+        r = struct.unpack_from("<8I4f", b, 0x14 + 48 * i)
+        cells.append({"corner_probes": list(r[:8]), "offset": [round(x, 4) for x in r[8:11]], "size": round(r[11], 4)})
+    return {"_binary_format": "Baked light probes - %s (.%s)" % ("resident (coarse) probes" if ext == "bkprcb" else "one block", ext),
+            "_note": "Light probes baked for one block of a scene's grid (see meta.bkprmb): a list of cells, each naming "
+                     "the 8 probes at its corners and its place / size inside the block (0-1). Decoded: the first cell "
+                     "list; the probes' light values after it aren't decoded yet.",
+            "version": struct.unpack_from("<I", b, 0)[0], "cells_in_first_list": n,
+            "cells": cells, "decoded_bytes": 0x14 + 48 * n, "size": len(b)}
+
+
+def read_nfib(b):
+    """NFIB (Lib/NintendoSDK/IconBody.dat): the bodies the SDK draws under Mii heads in icons"""
+    ver, size1, hdr = struct.unpack_from("<III", b, 4)
+    m1 = struct.unpack_from("<12I", b, 0x10); bb = struct.unpack_from("<6f", b, 0x40)
+    out = {"_binary_format": "NFIB Mii icon body (Nintendo SDK)",
+           "_note": "The 3D bodies the system's Mii library draws under a Mii's head for icons (Lib/NintendoSDK, part of "
+                    "every game using Mii icons). Two meshes with half-float vertex positions; decoded: the header, the "
+                    "data sizes and the first body's bounding box.",
+           "version": ver, "header_size": hdr, "mesh_data_sizes": [list(m1), list(struct.unpack_from("<12I", b, 0x60))],
+           "bounds_min": [round(x, 3) for x in bb[:3]], "bounds_max": [round(x, 3) for x in bb[3:]],
+           "vertices_first_body": m1[1] // 8 if m1[1] % 8 == 0 else None}
+    return out
+
+
+def read_opentype(b):
+    out = {"_binary_format": "OpenType font (.otf)", "_note": "A normal OpenType (CFF) font, not scrambled: it opens in "
+           "Windows and any font program. Its names, version, designer / copyright text and characters are listed."}
+    out.update(_sfnt_names(b))
+    try: out.update(_sfnt_chars(b))
+    except (struct.error, IndexError): pass
+    return out
+
+
+_VT_LANGS = {"BPT": "Portuguese (Brazil)", "POR": "Portuguese (Portugal)", "BRE": "English (UK)", "ENG": "English (US)",
+             "CFR": "French (Canada)", "FRE": "French (France)", "ESP": "Spanish (Spain)", "SPA": "Spanish (Latin America)",
+             "GER": "German", "ITA": "Italian", "DUT": "Dutch", "POL": "Polish", "RUS": "Russian", "JPN": "Japanese",
+             "KOR": "Korean", "CHI": "Chinese (Mandarin)", "TWN": "Chinese (Taiwan)", "THA": "Thai"}
+# the text encoding each language's VoiceText files use (vtpath.ini's CodePage)
+_VT_CODEPAGE = {"POL": "cp1250", "RUS": "cp1251", "THA": "cp874", "JPN": "cp932", "CHI": "cp936", "TWN": "cp950", "KOR": "cp949"}
+
+
+def read_voicetext(b, label):
+    """VoiceText (ReadSpeaker) speech-engine data under romfs/VoiceText: identified, word lists decoded"""
+    parts = label.split("/")
+    low = [x.lower() for x in parts]
+    i = low.index("vt") if "vt" in low else -1
+    lang = parts[i + 1] if 0 <= i < len(parts) - 1 else None
+    voice = parts[i + 2] if 0 <= i < len(parts) - 2 else None
+    name = parts[-1]; ext = _ext(label)
+    out = {"_binary_format": "VoiceText speech data",
+           "_note": "Data for the VoiceText text-to-speech engine (ReadSpeaker), which reads text aloud: per language "
+                    "a dictionary and text rules, per voice its sound model. These are the engine's own formats; "
+                    "what can be shown is listed (word lists in full, other files by what they are)."}
+    if lang: out["language"] = "%s - %s" % (lang, _VT_LANGS.get(lang.upper(), "?"))
+    if voice and "-" in voice or voice and "_" in voice: out["voice"] = voice
+    if b[:2] == b"v\x0e" or (len(b) > 4 and b[0:1] == b"v" and 32 <= b[3] < 127):
+        strs = [x.decode("latin-1") for x in re.findall(rb"[\x20-\x7e]{3,}", b[:64])]
+        out["_binary_format"] = "VoiceText voice model"
+        out.update({"engine": next((x for x in strs if x.startswith("vt_")), None), "header_strings": strs})
+    elif b[:4] == b"NLP\x01":
+        h = struct.unpack_from("<I8I", b, 4)
+        out["_binary_format"] = "VoiceText NLP hash table"
+        out.update({"hash_seed": "0x%08X" % h[0], "header_values": list(h[1:])})
+    elif b[:3] == b"nlp":                               # "nlp" + text with every byte raised by 10
+        cp = _VT_CODEPAGE.get((lang or "").upper(), "cp1252")
+        t = bytes((x - 10) & 255 for x in b[3:]).decode(cp, "replace")
+        w = [x for x in t.replace("\r\n", "\n").split("\n") if x]
+        if w and w[0].startswith('"') and w[0].count('","') >= 1:      # a user dictionary: "written","reading","kind"
+            import csv as _csv, io as _io
+            rows = list(_csv.reader(_io.StringIO("\n".join(w))))
+            out["_binary_format"] = "VoiceText user dictionary (lightly scrambled)"
+            out.update({"entries": len(rows), "rows": [{"written": r[0], "say_as": r[1] if len(r) > 1 else "",
+                        "kind": r[2] if len(r) > 2 else ""} for r in rows if r]})
+        else:
+            out["_binary_format"] = "VoiceText word list (lightly scrambled)"
+            out.update({"words": len(w), "list": w})
+    elif b[:3] == b"tts":                               # "tts" + text with every byte raised by 0x61 (+ "tts" at the end)
+        body = b[3:-3] if b.endswith(b"tts") else b[3:]
+        t = bytes((x - 0x61) & 255 for x in body).split(b"\0")[0].decode("latin-1", "replace")
+        lines = [x for x in t.replace("\r\n", "\n").split("\n") if x]
+        kind = {"lst": "list", "pat": "phoneme patterns"}.get(ext, "text")
+        out["_binary_format"] = "VoiceText %s (lightly scrambled)" % kind
+        if ext == "pat":
+            out["_note"] += " A pattern table: each line is a phoneme rule with tab-separated fields (the phoneme names are listed in bp.lst)."
+            out.update({"lines": len(lines), "rows": [x.split("\t") for x in lines]})
+        else:
+            out["_note"] += " bp.lst = the voice's phoneme names; ba.lst = its accent / stress marks."
+            out.update({"entries": len(lines), "list": lines})
+    elif ext == "csv":
+        t = b.decode("utf-8") if text_of(b) is not None else b.decode("cp1252", "replace")
+        import csv as _csv, io as _io
+        rows = list(_csv.reader(_io.StringIO(t)))
+        kinds = {"t": "text replaced by text", "a": "text replaced by spelling", "w": "word with phonemes"}
+        out["_binary_format"] = "VoiceText user dictionary (CSV)"
+        out["_note"] += " A user dictionary: how the game wants names and words said - written form, how to say it, kind."
+        out.update({"entries": len(rows), "rows": [{"written": r[0], "say_as": r[1] if len(r) > 1 else "",
+                    "kind": kinds.get(r[2], r[2]) if len(r) > 2 else ""} for r in rows if r]})
+    elif b.count(b"\0") > 100 and all(32 <= c < 256 or c == 0 for c in b[:2000]) and b"\0N\0" in b[:2000]:
+        p = b.split(b"\0"); words = p[0::2]; tags = p[1::2]
+        tc = {}
+        for t_ in tags: tc[t_.decode("latin-1")] = tc.get(t_.decode("latin-1"), 0) + 1
+        out["_binary_format"] = "VoiceText word list with tags"
+        out.update({"words": len([w for w in words if w]), "first": [w.decode("latin-1") for w in words[:30]],
+                    "last": [w.decode("latin-1") for w in words if w][-10:],
+                    "tags": dict(sorted(tc.items(), key=lambda kv: -kv[1])[:30])})
+    elif ext == "win":
+        out["_binary_format"] = "VoiceText window table"
+        out["values"] = list(struct.unpack_from("<%dH" % (len(b) // 2), b, 0))
+    elif ext == "tree3":
+        out["_binary_format"] = "VoiceText decision tree"
+        out["first_value"] = struct.unpack_from("<I", b, 0)[0]
+    elif ext == "rs":
+        out["_binary_format"] = "VoiceText compiled dictionary"
+    else:
+        out["_binary_format"] = "VoiceText engine data (%s)" % (ext or "no extension")
+    out["file"] = name
+    return out
+
+
+def identify_nssr(label, blob, ext, name):
+    if blob is None: return None
+    low = "/" + label.lower()
+    if ext == "dat" and len(blob) == 0x58 and "/mii/" in low:
+        return read_mii_charinfo(blob)
+    if ext == "gswg": return read_gswg(blob)
+    if ext == "bwr" and len(blob) >= 64: return read_bwr(blob, label)
+    if ext == "bkprmb" and len(blob) >= 0x2C: return read_probe_meta(blob)
+    if ext in ("bkprb", "bkprcb") and len(blob) >= 0x44: return read_probe_block(blob, ext)
+    if blob[:4] == b"NFIB" and len(blob) >= 0xA8: return read_nfib(blob)
+    if blob[:4] == b"OTTO" and ext in ("otf", "ttf"): return read_opentype(blob)
+    if "/voicetext/" in low:
+        if ext == "listing" or (ext != "csv" and text_of(blob) is not None):   # folder listings and plain text: as usual
+            return None
+        return read_voicetext(blob, label)
+    return None
+
+
 def identify_special(label, blob, head):
     """-> JSON dict for formats recognised by name and contents, or None"""
     ext = _ext(label)
     name = label.rsplit("/", 1)[-1].lower()
     if blob is not None and blob[:5] == b"VGEOB" and len(blob) >= 9:
         return read_vgeob(blob)
+    try:
+        r = identify_nssr(label, blob, ext, name)
+        if r is not None:
+            return r
+    except Exception as e:
+        nm = {"bwr": "Bowling replay", "gswg": "Golf swing replay", "bkprmb": "Baked light probes - scene info",
+              "bkprb": "Baked light probes - one block", "bkprcb": "Baked light probes - resident", "dat": "Mii character",
+              "otf": "OpenType font"}.get(ext, "VoiceText speech data" if "/voicetext/" in "/" + label.lower() else (ext or "file") + " file")
+        return {"_binary_format": "%s (couldn't be read: %s)" % (nm, e), "_first_bytes": bytes(head[:16]).hex(" ")}
     try:
         if blob is not None and blob[:4] == b"TARB":
             return read_tarb(blob, label)
@@ -4721,8 +5011,9 @@ def identify_special(label, blob, head):
         if blob is not None and name.endswith("_tbl.bin") and blob[:2] == b"\x20\x00":
             return read_char_table(blob)
     except Exception as e:
-        return {"_binary_format": "%s (couldn't be read: %s)" % (blob[:4].decode("latin-1") if blob else ext, e),
-                "_first_bytes": bytes(head[:16]).hex(" ")}
+        tag = blob[:4].decode("latin-1") if blob else ""
+        if not re.fullmatch(r"[A-Za-z0-9 _]{4}", tag): tag = (ext or "file") + " file"   # (raw bytes in a name break the log)
+        return {"_binary_format": "%s (couldn't be read: %s)" % (tag, e), "_first_bytes": bytes(head[:16]).hex(" ")}
     if blob is not None and blob[:4] == b"FLYT":
         return read_bflyt(blob)
     if blob is not None and blob[:4] == b"BNTX":
@@ -5155,7 +5446,7 @@ class Dumper:
                     "_first_bytes": bytes(head[:16]).hex(" ")}
         if info is not None:
             bf = info["_binary_format"]
-            key = bf.split(" (")[0].split(" font")[0] if "font" not in bf else "fonts (Nintendo obfuscated)"
+            key = "fonts (Nintendo obfuscated)" if "obfuscated" in bf and "font" in bf else bf.split(" (")[0]
             if "couldn't be read" in bf or "_warning" in info:
                 key = bf.split(" (")[0] + (" - couldn't be read" if "couldn't be read" in bf else " - partly read (warning)")
                 self.problem_examples.setdefault(key, label)
@@ -5229,8 +5520,11 @@ class Dumper:
                 info = read_nso(blob)
                 self.entry(label, info)
                 self.count("NSO executables (decoded)")
-                print("  %s: %d exported / %d imported symbols, %d strings" % (
-                    label, info.get("exported_symbol_count", 0), info.get("imported_symbol_count", 0), len(info["strings"])))
+                if "_warning" in info and "strings" not in info:
+                    print("  %s: compressed with ZBIC - run  pip install zbic  to decode it (header saved)" % label)
+                else:
+                    print("  %s: %d exported / %d imported symbols, %d strings" % (
+                        label, info.get("exported_symbol_count", 0), info.get("imported_symbol_count", 0), len(info.get("strings", []))))
             except Exception as e:
                 self.problem(label, "NSO: %s" % e, head)
             return
@@ -5251,10 +5545,11 @@ class Dumper:
             blob = None
             # models/animations can be big (a character's full move set): allow them more room than other files
             limit = 400 * 1024 * 1024 if _ext(label) in ("bfres", "asb", "baev", "bars", "bntx") else 32 * 1024 * 1024
-            if (_ext(label) in SPECIAL_EXTS or kind == "text" or head[:3] == b"\xef\xbb\xbf") and os.path.getsize(path) > limit:
+            vt = "/voicetext/" in "/" + label.lower()        # VoiceText speech data: any name (many have no extension)
+            if (_ext(label) in SPECIAL_EXTS or vt or kind == "text" or head[:3] == b"\xef\xbb\xbf") and os.path.getsize(path) > limit:
                 self.note_binary(label, kind + " (too large to read here: %d MB)" % (os.path.getsize(path) >> 20), None, head, zstd)
                 return
-            if (_ext(label) in SPECIAL_EXTS or kind == "text" or head[:3] == b"\xef\xbb\xbf"):
+            if (_ext(label) in SPECIAL_EXTS or vt or kind == "text" or head[:3] == b"\xef\xbb\xbf"):
                 with open(path, "rb") as f:
                     # a plain BWAV only needs its header (channel info) - saves reading GBs of audio
                     blob = f.read(0x10 + 16 * 0x4C) if (_ext(label) == "bwav" and not zstd) else f.read()
@@ -5349,7 +5644,7 @@ def main():
         print("@@PROGRESS %d %d" % (len(paths), len(paths)), flush=True)
     print("\nFile types found:")
     for kind, n in sorted(d.stats.items(), key=lambda kv: -kv[1]):
-        print("  %-36s %d" % (kind, n))
+        print("  %-36s %d" % (_printable(kind), n))
     unk = [k for k in d.exts if k.startswith("unknown")]
     if unk:
         print("\nFormats without a recognised header, by file extension (with one example each):")
@@ -5370,7 +5665,7 @@ def main():
     if d.problem_examples:
         print("\nFiles a reader couldn't fully read (one example each - please report these by opening an issue on the ns2dig GitHub page):")
         for kind, ex in sorted(d.problem_examples.items()):
-            print("  %-46s %6d   e.g. %s" % (kind, d.stats.get(kind, 0), ex))
+            print("  %-46s %6d   e.g. %s" % (_printable(kind), d.stats.get(kind, 0), ex))
     if d.restbls:
         import zlib
         names = {}

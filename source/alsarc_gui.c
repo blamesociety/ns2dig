@@ -27,7 +27,7 @@
 enum {
     ID_ROMFS = 101, ID_ROMFS_BTN, ID_OUT, ID_OUT_BTN, ID_SCRIPT, ID_SCRIPT_BTN,
     ID_EXTRACT, ID_LOAD, ID_SEARCH_EDIT, ID_SEARCH, ID_STOP, ID_NEXT, ID_CASE, ID_ALLFILES, ID_OPENDIR, ID_COPYRES, ID_SCOPE, ID_SCANLOG,
-    ID_STATUS, ID_TREE, ID_RESULTS, ID_RESULTS_LBL, ID_VIEW, ID_VIEW_LBL, ID_GOPATH, ID_GOBTN, ID_VOX3D, ID_PLAYSND, ID_TYPES, ID_ZIPSTOP, ID_VIEWTEX, ID_VIEWLYT, ID_VIEWFNT, ID_VIEWLGT, ID_VIEWEVT, ID_OPENROM, ID_BOOKMARKS, ID_BMSTAR
+    ID_STATUS, ID_TREE, ID_RESULTS, ID_RESULTS_LBL, ID_VIEW, ID_VIEW_LBL, ID_GOPATH, ID_GOBTN, ID_VOX3D, ID_PLAYSND, ID_TYPES, ID_ZIPSTOP, ID_VIEWTEX, ID_VIEWLYT, ID_VIEWFNT, ID_VIEWLGT, ID_VIEWEVT, ID_OPENROM, ID_BOOKMARKS, ID_BULKZIP, ID_BMSTAR
 };
 #define WM_APP_LOG      (WM_APP + 1)
 #define WM_APP_DONE     (WM_APP + 2)
@@ -586,7 +586,7 @@ static BOOL g_filterOn;
 static wchar_t g_sel[MAXTYPES][TYPELEN]; static int g_nsel;
 static uint64_t g_selMask[4];                // g_sel as bits of g_idx
 static HWND g_typesbtn, g_typesDlg;
-static HWND g_bmBtn, g_bmStar;          // "Bookmarks" menu button; star (bookmark what is shown)
+static HWND g_bmBtn, g_bmStar, g_bulkBtn;   // "Bookmarks" menu button; star (bookmark what is shown); "Bulk ZIP"
 static BOOL g_bmOn;                      // what is shown is bookmarked
 static void CacheDirFor(const wchar_t *scanName, wchar_t *out, size_t n);
 
@@ -1855,7 +1855,7 @@ static const wchar_t *TypeDesc(const wchar_t *t) {
         { L"vgeob", L"Voxel object shape - 3D view" }, { L"hgeob", L"Voxel object surface detail" },
         { L"voxel terrain", L"Terrain part files - 3D view" }, { L"msbt", L"Text messages" },
         { L"byml", L"Data (BYML)" }, { L"byaml", L"Data (BYML - the same format as .byml)" }, { L"changelist", L"Build note from Nintendo's tools: the source shader database (.fsdb) a shader archive was built from, and its change number" }, { L"bgyml", L"Game parameters (BYML)" }, { L"sarc", L"Archive" },
-        { L"bnvib", L"Rumble (HD Rumble) pattern" }, { L"bfttf", L"Font" }, { L"bfotf", L"Font" }, { L"bffnt", L"Font" }, { L"bfcpx", L"Font" },
+        { L"bnvib", L"Rumble (HD Rumble) pattern" }, { L"bfttf", L"Font" }, { L"bfotf", L"Font" }, { L"otf", L"Font (plain OpenType)" }, { L"bffnt", L"Font" }, { L"bfcpx", L"Font" },
         { L"bfres", L"3D model / animation - 3D view (models)" }, { L"bntx", L"Textures - Textures button, PNG export" },
         { L"glsl", L"Shader source (text)" }, { L"txt", L"Text" }, { L"bushvt", L"UI shader table" }, { L"webm", L"Video - Play" }, { L"bnsh", L"Compiled GPU shaders (UI) - inputs, textures, buffers listed" }, { L"sharcb", L"Engine shader archive: programs, options, inputs, textures, buffers listed" }, { L"bfsha", L"Material shader archive: shading models, options, textures, uniforms, programs listed" }, { L"gsh", L"Wii U shader (left over): attributes, uniforms, textures listed" }, { L"pck", L"GPU pack (NDSR): shaders and data buffers listed" },
         { L"ainb", L"AI / logic node graph" },
@@ -1896,6 +1896,25 @@ static const wchar_t *TypeDesc(const wchar_t *t) {
         { L"dapg", L"Sound reflection (acoustic probe) grid" }, { L"ghost", L"Staff ghost replay (recording date shown)" },
         { L"ainb", L"AI / game-flow node graph" }, { L"xtx", L"Plain NVN texture (sead debug font) - Textures button" },
         { L"baatarc", L"Sound attenuation curves (archive)" }, { L"sharc", L"agl shader source archive (GLSL text)" },
+        // Nintendo Switch Sports Resort (NSSR)
+        { L"bwr", L"Bowling replay (a recorded throw): frames, pin flags, key frames (the movement isn't decoded yet)" },
+        { L"gswg", L"Golf swing replay: two values per frame (their meaning isn't fully known)" },
+        { L"bkprmb", L"Baked light probes: a scene's probe grid (corner, block size, blocks)" },
+        { L"bkprb", L"Baked light probes: one block's cells (the light values aren't decoded yet)" },
+        { L"bkprcb", L"Baked light probes: the scene's coarse probes kept loaded (cells; values not decoded yet)" },
+        { L"dat", L"Mii character (Mii\\*.dat: name and every face / body setting); Lib\\NintendoSDK\\IconBody.dat = Mii icon bodies" },
+        { L"(no extension)", L"No extension: in NSSR, VoiceText speech-engine data (dictionaries, word lists, hash tables)" },
+        { L"rs", L"VoiceText speech engine: compiled pronunciation dictionary (identified, not decoded)" },
+        { L"tree3", L"VoiceText speech engine: decision tree (identified, not decoded)" },
+        { L"win", L"VoiceText speech engine: window table (numbers listed)" },
+        { L"txt2", L"VoiceText speech engine: word list (lightly scrambled - decoded in full)" },
+        { L"csv", L"VoiceText user dictionary: how the game wants names and words said (decoded in full)" },
+        { L"ini", L"VoiceText voice setup (text): each voice's folder, language, code page, gender and language code" },
+        { L"lst", L"VoiceText voice: phoneme names (bp.lst) or accent / stress marks (ba.lst) - lightly scrambled, decoded" },
+        { L"pat", L"VoiceText voice: phoneme pattern rules (l.pat) - lightly scrambled, decoded" },
+        { L"dic", L"VoiceText user dictionary (Japanese): written form, reading, word kind - lightly scrambled, decoded" },
+        { L"bvege", L"Grass / plant settings for a scene (AAMP parameters)" },
+        { L"lex", L"VoiceText: how the game's button icons in text are read aloud (e.g. the A-button icon = \"A button\") - text" },
     };
     for (size_t i = 0; i < sizeof d / sizeof d[0]; i++) if (!wcscmp(d[i][0], t)) return d[i][1];
     return L"";
@@ -2428,6 +2447,7 @@ static void OpenLyt(const wchar_t *outFile) {
 // the game's fonts (inside Font\Font*.bfarc): real fonts, bitmap fonts and font combinations
 static BOOL IsFontOut(const wchar_t *path, BOOL isDir) {
     return !isDir && path && path[0] && (EndsWithI(path, L".bfotf.json") || EndsWithI(path, L".bfttf.json") || EndsWithI(path, L".bffnt.json") || EndsWithI(path, L".bfcpx.json") ||
+                                          ((EndsWithI(path, L".otf.json") || EndsWithI(path, L".ttf.json")) && StrStrIW(path, L"\\scft\\")) ||
                                           EndsWithI(path, L".bfotf.zs.json") || EndsWithI(path, L".bfttf.zs.json") || EndsWithI(path, L".bffnt.zs.json"));
 }
 // lighting: the AAMP files of an Env\X.genvb.zs archive (or the archive's folder in the tree)
@@ -3151,6 +3171,7 @@ typedef struct {
     BOOL filt; int nsel; wchar_t sel[MAXTYPES][TYPELEN];
     // results
     int written, skipped; unsigned long long bytes; BOOL ok, cancelled; wchar_t err[512];
+    wchar_t *note;                   // Bulk ZIP: the pasted paths that weren't found (shown when the ZIP is done)
 } ZipJob;
 typedef struct { char *name; DWORD crc, csize, usize; WORD method, time, date; unsigned long long off; } ZipEnt;
 
@@ -3170,7 +3191,7 @@ static void ZipAdd(ZipJob *j, const wchar_t *src, const wchar_t *zname) {
 }
 static void FreeZipJob(ZipJob *j) {
     for (int i = 0; i < j->n; i++) { xfree(j->items[i].src); xfree(j->items[i].name); }
-    xfree(j->items); xfree(j);
+    xfree(j->items); xfree(j->note); xfree(j);
 }
 
 typedef struct { HANDLE h; unsigned long long pos; BOOL fail; } ZOut;
@@ -3452,6 +3473,221 @@ static void ZipSelectedDump(void) {
     xfree(sel); xfree(paths);
 }
 
+/* ------------------------------------------------------------------ Bulk ZIP
+   A window to paste many paths (one per line: full paths, paths within the scan such as base\romfs\X, with or without
+   .json) and ZIP their JSON files (from the scan's output folder), their originals from the game dump, or both
+   (folders JSON\ and ROM\). A file that was inside an archive gives the archive itself. Lines that aren't found are
+   listed when the ZIP is done; the rest are still zipped. */
+static HWND g_bulkDlg;
+enum { BZ_HEAD = 6101, BZ_EDIT, BZ_JSON, BZ_ROM, BZ_BOTH, BZ_CLEAR };
+// one pasted line -> its file or folder in the scan's output (FALSE: not found, or not a path at all: *isPath)
+static BOOL BulkResolve(const wchar_t *line, wchar_t *found, BOOL *isPath) {
+    wchar_t in[PATHBUF]; swprintf(in, PATHBUF, L"%ls", line); *isPath = FALSE; found[0] = 0;
+    wchar_t *s = in;
+    while (*s == L' ' || *s == L'\t' || *s == L'"' || *s == L'\'' || *s == L'`' || *s == L'-' || *s == L'*' || *s == 0x2022 || (*s >= 0x2500 && *s <= 0x257F)) s++;
+    for (wchar_t *q = s; *q; q++) if ((q[0] == L' ' && q[1] == L' ') || *q == L'\t' || *q == L'\r' || *q == L'\n') { *q = 0; break; }
+    size_t l = wcslen(s);
+    while (l && (s[l - 1] == L' ' || s[l - 1] == L'"' || s[l - 1] == L'\'' || s[l - 1] == L'`' || s[l - 1] == L'/' || s[l - 1] == L'\\' || s[l - 1] == L',')) s[--l] = 0;
+    if (!l) return FALSE;
+    for (wchar_t *q = s; *q; q++) if (*q == L'/') *q = L'\\';
+    if (!wcschr(s, L'\\') && !wcschr(s, L'.')) return FALSE;          // a heading such as "Send JSON"
+    *isPath = TRUE;
+    if (!wcsncmp(s, L"\\\\?\\", 4)) s += 4;
+    wchar_t rel[PATHBUF], scan[PATHBUF]; ScanNameOf(g_root, scan, PATHBUF);
+    size_t rl = wcslen(g_root), sl = wcslen(scan);
+    wchar_t src[PATHBUF] = L""; ScanSource(scan, src);
+    size_t dl = wcslen(src); while (dl > 3 && src[dl - 1] == L'\\') src[--dl] = 0;
+    if (!_wcsnicmp(s, g_root, rl) && (s[rl] == 0 || s[rl] == L'\\')) swprintf(rel, PATHBUF, L"%ls", s + rl + (s[rl] == L'\\'));
+    else if (dl && !_wcsnicmp(s, src, dl) && (s[dl] == 0 || s[dl] == L'\\')) swprintf(rel, PATHBUF, L"%ls", s + dl + (s[dl] == L'\\'));   // a path in the game dump
+    else if (!_wcsnicmp(s, scan, sl) && (s[sl] == 0 || s[sl] == L'\\')) swprintf(rel, PATHBUF, L"%ls", s + sl + (s[sl] == L'\\'));
+    else if (s[1] == L':' || (s[0] == L'\\' && s[1] == L'\\')) {
+        const wchar_t *r = NULL;
+        for (const wchar_t *q = s; (q = wcsstr(q, L"\\")) != NULL; q++) if (!_wcsnicmp(q, L"\\romfs\\", 7)) r = q + 7;
+        if (!r) return FALSE;
+        swprintf(rel, PATHBUF, L"%ls", r);
+    } else swprintf(rel, PATHBUF, L"%ls", s);
+    if (!rel[0]) return FALSE;
+    int depth; wchar_t deepest[PATHBUF];
+    if (ResolveUnder(g_root, rel, found, PATHBUF, &depth, deepest)) return TRUE;
+    static wchar_t roots[32][PATHBUF]; int nr = 0;
+    FindRomfsRoots(g_root, 0, roots, &nr, 32);
+    for (int i = 0; i < nr; i++) if (ResolveUnder(roots[i], rel, found, PATHBUF, &depth, deepest)) return TRUE;
+    found[0] = 0; return FALSE;
+}
+// ZipAdd, unless that name is already in the ZIP
+static void ZipAddOnce(ZipJob *j, const wchar_t *src, const wchar_t *zname) {
+    wchar_t nm[PATHBUF]; swprintf(nm, PATHBUF, L"%ls", zname);
+    for (wchar_t *q = nm; *q; q++) if (*q == L'\\') *q = L'/';
+    char u[PATHBUF * 3]; WideCharToMultiByte(CP_UTF8, 0, nm, -1, u, sizeof u, NULL, NULL);
+    for (int i = 0; i < j->n; i++) if (!_stricmp(j->items[i].name, u)) return;
+    ZipAdd(j, src, nm);
+}
+static void BulkNote(wchar_t **note, size_t *cap, const wchar_t *line, const wchar_t *why) {
+    size_t have = *note ? wcslen(*note) : 0, need = have + wcslen(line) + wcslen(why) + 16;
+    if (need > *cap) { size_t nc = need * 2; wchar_t *n2 = (wchar_t *)xalloc(nc * sizeof(wchar_t)); if (!n2) return; if (*note) { wcscpy(n2, *note); xfree(*note); } else n2[0] = 0; *note = n2; *cap = nc; }
+    swprintf(*note + have, *cap - have, L"%ls  (%ls)\n", line, why);
+}
+// mode 1 = JSON, 2 = ROM, 3 = both
+static void BulkZip(HWND dlg, int mode) {
+    if (!g_root[0]) { MessageBoxW(dlg, L"Open a scan first (pick it from the Scan name list).", L"Bulk ZIP", MB_ICONINFORMATION); return; }
+    if (g_zipping) { MessageBoxW(dlg, L"A ZIP file is still being made. Wait for it to finish first.", L"Bulk ZIP", MB_ICONINFORMATION); return; }
+    HWND ed = GetDlgItem(dlg, BZ_EDIT);
+    int tl = GetWindowTextLengthW(ed);
+    if (tl <= 0) { MessageBoxW(dlg, L"Paste some file paths into the box first.", L"Bulk ZIP", MB_ICONINFORMATION); return; }
+    wchar_t *txt = (wchar_t *)xalloc((tl + 2) * sizeof(wchar_t)); if (!txt) return;
+    GetWindowTextW(ed, txt, tl + 1);
+    ZipJob *j = (ZipJob *)xalloc(sizeof(ZipJob)); if (!j) { xfree(txt); return; }
+    wchar_t scan[PATHBUF], src[PATHBUF] = L""; ScanNameOf(g_root, scan, PATHBUF); ScanSource(scan, src);
+    size_t dl = wcslen(src); while (dl > 3 && src[dl - 1] == L'\\') src[--dl] = 0;
+    size_t rl = wcslen(g_root);
+    wchar_t *note = NULL; size_t ncap = 0; int nPaths = 0, nMiss = 0, nArc = 0;
+    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    const wchar_t *pj = mode == 3 ? L"JSON\\" : L"", *pr = mode == 3 ? L"ROM\\" : L"";
+    for (wchar_t *line = txt; line && *line; ) {
+        wchar_t *e = line; while (*e && *e != L'\r' && *e != L'\n') e++;
+        wchar_t keep = *e; *e = 0;
+        wchar_t found[PATHBUF]; BOOL isPath;
+        if (BulkResolve(line, found, &isPath)) {
+            nPaths++;
+            BOOL isDir = FALSE; PathExists(found, &isDir);
+            const wchar_t *relOut = found + rl + (found[rl] == L'\\');
+            if (mode & 1) {
+                wchar_t zn[PATHBUF]; swprintf(zn, PATHBUF, L"%ls%ls", pj, relOut);
+                if (isDir) { DWORD lp0 = 0; wchar_t zp[PATHBUF]; swprintf(zp, PATHBUF, L"%ls", zn); for (wchar_t *q = zp; *q; q++) if (*q == L'\\') *q = L'/'; ZipFolderRec(j, found, zp, &lp0); }
+                else ZipAddOnce(j, found, zn);
+            }
+            if (mode & 2) {
+                wchar_t d[PATHBUF]; BOOL known; int k = DumpOrigNoAsk(found, isDir, d, &known);
+                if (k == 0) { BulkNote(&note, &ncap, line, known ? L"not in the game dump" : L"the game dump folder for this scan isn't known"); nMiss++; }
+                else {
+                    const wchar_t *relD = (dl && !_wcsnicmp(d, src, dl) && d[dl] == L'\\') ? d + dl + 1 : wcsrchr(d, L'\\') ? wcsrchr(d, L'\\') + 1 : d;
+                    wchar_t zn[PATHBUF]; swprintf(zn, PATHBUF, L"%ls%ls", pr, relD);
+                    if (k == 2) { DWORD lp0 = 0; wchar_t zp[PATHBUF]; swprintf(zp, PATHBUF, L"%ls", zn); for (wchar_t *q = zp; *q; q++) if (*q == L'\\') *q = L'/'; ZipFolderRec(j, d, zp, &lp0); }
+                    else { if (k == 3) nArc++; ZipAddOnce(j, d, zn); }
+                }
+            }
+        } else if (isPath) { nPaths++; nMiss++; BulkNote(&note, &ncap, line, L"not found in this scan"); }
+        *e = keep;
+        line = e; while (*line == L'\r' || *line == L'\n') line++;
+    }
+    SetCursor(oc);
+    xfree(txt);
+    if (!nPaths) { MessageBoxW(dlg, L"No file paths were found in the box.", L"Bulk ZIP", MB_ICONINFORMATION); xfree(note); FreeZipJob(j); return; }
+    if (!j->n) {
+        size_t nl = (note ? wcslen(note) : 0) + 200; wchar_t *m = (wchar_t *)xalloc(nl * sizeof(wchar_t));
+        if (m) { swprintf(m, nl, L"None of the pasted paths could be found, so no ZIP was made:\n\n%ls", note ? note : L""); MessageBoxW(dlg, m, L"Bulk ZIP", MB_ICONWARNING); xfree(m); }
+        xfree(note); FreeZipJob(j); return;
+    }
+    {                                                    // the message shown when the ZIP is done
+        size_t nl = (note ? wcslen(note) : 0) + 400; wchar_t *m = (wchar_t *)xalloc(nl * sizeof(wchar_t));
+        if (m) {
+            int o = swprintf(m, nl, L"Pasted paths: %d - found %d.\n", nPaths, nPaths - nMiss);
+            if (nMiss) o += swprintf(m + o, nl - o, L"%d of the pasted paths couldn't be found (everything else is in the ZIP):\n%ls", nMiss, note);
+            if (nArc) o += swprintf(m + o, nl - o, L"%ls%d of the files are inside archives in the game dump: the archive itself is in the ZIP.", nMiss ? L"\n" : L"", nArc);
+        }
+        j->note = m;
+    }
+    xfree(note);
+    wchar_t sug[MAX_PATH]; swprintf(sug, MAX_PATH, L"%.80ls - %ls.zip", scan, mode == 1 ? L"JSON" : mode == 2 ? L"ROM" : L"JSON and ROM");
+    if (!AskZipPath(sug, j->out)) { FreeZipJob(j); return; }
+    StartZip(j);
+}
+// pasting: text copied from a web page often has bare line feeds, which an edit box shows as one long line -
+// paste it with Windows line ends instead
+static LRESULT CALLBACK BulkEditSub(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref) {
+    (void)id; (void)ref;
+    if (msg == WM_PASTE && IsClipboardFormatAvailable(CF_UNICODETEXT) && OpenClipboard(h)) {
+        HANDLE g = GetClipboardData(CF_UNICODETEXT);
+        const wchar_t *t = g ? (const wchar_t *)GlobalLock(g) : NULL;
+        if (t) {
+            size_t n = wcslen(t); wchar_t *o = (wchar_t *)xalloc((2 * n + 1) * sizeof(wchar_t));
+            if (o) {
+                size_t k = 0;
+                for (size_t i = 0; i < n; i++) {
+                    if (t[i] == L'\r') { o[k++] = L'\r'; o[k++] = L'\n'; if (t[i + 1] == L'\n') i++; }
+                    else if (t[i] == L'\n') { o[k++] = L'\r'; o[k++] = L'\n'; }
+                    else if (t[i] == 0x2028 || t[i] == 0x2029 || t[i] == 0x85) { o[k++] = L'\r'; o[k++] = L'\n'; }   // Unicode line / paragraph separators
+                    else o[k++] = t[i];
+                }
+                o[k] = 0;
+                GlobalUnlock(g); CloseClipboard();
+                SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)o);
+                xfree(o);
+                return 0;
+            }
+            GlobalUnlock(g);
+        }
+        CloseClipboard();
+    }
+    if (msg == WM_NCDESTROY) RemoveWindowSubclass(h, BulkEditSub, 41);
+    return DefSubclassProc(h, msg, wp, lp);
+}
+static LRESULT CALLBACK BulkDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_CREATE: {
+        HINSTANCE inst = GetModuleHandleW(NULL);
+        struct { const wchar_t *cls, *txt; DWORD st, ex; int id; } c[] = {
+            { L"STATIC", L"Paste full file paths here to generate a ZIP file of all those files", 0, 0, BZ_HEAD },
+            { L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, BZ_EDIT },
+            { L"BUTTON", L"ZIP JSON", BS_PUSHBUTTON | WS_TABSTOP, 0, BZ_JSON },
+            { L"BUTTON", L"ZIP ROM", BS_PUSHBUTTON | WS_TABSTOP, 0, BZ_ROM },
+            { L"BUTTON", L"ZIP both", BS_PUSHBUTTON | WS_TABSTOP, 0, BZ_BOTH },
+            { L"BUTTON", L"Clear", BS_PUSHBUTTON | WS_TABSTOP, 0, BZ_CLEAR },
+        };
+        for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+            HWND h = CreateWindowExW(c[i].ex, c[i].cls, c[i].txt, WS_CHILD | WS_VISIBLE | c[i].st, 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)c[i].id, inst, NULL);
+            SendMessageW(h, WM_SETFONT, (WPARAM)g_font, TRUE);
+        }
+        SendMessageW(GetDlgItem(hwnd, BZ_EDIT), EM_SETLIMITTEXT, 4 * 1024 * 1024, 0);
+        SetWindowSubclass(GetDlgItem(hwnd, BZ_EDIT), BulkEditSub, 41, 0);
+        return 0;
+    }
+    case WM_SIZE: {
+        int w = LOWORD(lp), h = HIWORD(lp), m = S(10), g = S(8), bh = S(28), hh = S(22);
+        MoveWindow(GetDlgItem(hwnd, BZ_HEAD), m, m, w - 2 * m, hh, TRUE);
+        int ey = m + hh + S(4), eh = h - ey - bh - g - m;
+        MoveWindow(GetDlgItem(hwnd, BZ_EDIT), m, ey, w - 2 * m, eh, TRUE);
+        int y = ey + eh + g, bw = S(110), x = m;
+        int ids[3] = { BZ_JSON, BZ_ROM, BZ_BOTH };
+        for (int i = 0; i < 3; i++) { MoveWindow(GetDlgItem(hwnd, ids[i]), x, y, bw, bh, TRUE); x += bw + g; }
+        MoveWindow(GetDlgItem(hwnd, BZ_CLEAR), w - m - S(80), y, S(80), bh, TRUE);
+        return 0;
+    }
+    case WM_GETMINMAXINFO: { MINMAXINFO *mm = (MINMAXINFO *)lp; mm->ptMinTrackSize.x = S(520); mm->ptMinTrackSize.y = S(300); return 0; }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case BZ_JSON: BulkZip(hwnd, 1); return 0;
+        case BZ_ROM:  BulkZip(hwnd, 2); return 0;
+        case BZ_BOTH: BulkZip(hwnd, 3); return 0;
+        case BZ_CLEAR: SetWindowTextW(GetDlgItem(hwnd, BZ_EDIT), L""); SetFocus(GetDlgItem(hwnd, BZ_EDIT)); return 0;
+        case IDCANCEL: DestroyWindow(hwnd); return 0;
+        }
+        break;
+    case WM_CLOSE: DestroyWindow(hwnd); return 0;
+    case WM_DESTROY: g_bulkDlg = NULL; return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+static void ShowBulkZip(void) {
+    if (g_bulkDlg) { ShowWindow(g_bulkDlg, SW_RESTORE); SetForegroundWindow(g_bulkDlg); return; }
+    static int reg = 0;
+    HINSTANCE inst = GetModuleHandleW(NULL);
+    if (!reg) {
+        WNDCLASSEXW wc = { 0 }; wc.cbSize = sizeof wc; wc.lpfnWndProc = BulkDlgProc; wc.hInstance = inst;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+        wc.lpszClassName = L"Ns2digBulkZip"; RegisterClassExW(&wc); reg = 1;
+    }
+    RECT r; GetWindowRect(g_wnd, &r);
+    int w = S(760), h = S(520);
+    g_bulkDlg = CreateWindowExW(0, L"Ns2digBulkZip", L"Bulk ZIP", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                                r.left + (r.right - r.left - w) / 2, r.top + (r.bottom - r.top - h) / 2, w, h, g_wnd, NULL, inst, NULL);
+    if (!g_bulkDlg) return;
+    UiSkinWindow(g_bulkDlg);
+    ShowWindow(g_bulkDlg, SW_SHOW);
+    SetFocus(GetDlgItem(g_bulkDlg, BZ_EDIT));
+}
+
 /* ------------------------------------------------------------------ extraction */
 typedef struct { wchar_t script[PATHBUF], input[PATHBUF], output[PATHBUF]; } RunArgs;
 
@@ -3571,6 +3807,7 @@ static DWORD RunWorkerBody(LPVOID p) {
             start = i + 1;
         }
         (void)logStart;
+        for (size_t q = 0; q < logLen; q++) if (!logbuf[q]) logbuf[q] = ' ';    // a 0 byte would cut the rest of the log off
         if (logLen) { wchar_t *w = Utf8ToEditText(logbuf, (int)logLen); if (w) PostMessageW(g_wnd, WM_APP_LOG, 0, (LPARAM)w); }
         xfree(logbuf);
         memmove(line, line + start, used - start); used -= start;
@@ -4012,8 +4249,8 @@ static void Layout(int w, int h) {
         int tb = BtnW(g_typesbtn, 110); if (tb > split) tb = split;
         MoveWindow(g_typesbtn, m, y, tb, rh, TRUE);
         // extra buttons go to the right of the file-type filter (Stop ZIP while a ZIP is being made)
-        FlowItem extra[] = { { g_bmBtn, BtnW(g_bmBtn, 90), 0 }, { g_zipstop, BtnW(g_zipstop, 80), 0 } };
-        FlowRow(extra, 2, m + tb + gap, y, split - tb - gap, rh, S(4));
+        FlowItem extra[] = { { g_bmBtn, BtnW(g_bmBtn, 90), 0 }, { g_bulkBtn, BtnW(g_bulkBtn, 80), 0 }, { g_zipstop, BtnW(g_zipstop, 80), 0 } };
+        FlowRow(extra, 3, m + tb + gap, y, split - tb - gap, rh, S(4));
         ShowWindow(g_gobtn, SW_SHOW);
     }
     int treeTop = y + rh + S(6);
@@ -4101,6 +4338,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_gobtn   = MakeCtl(L"BUTTON", L"Go", BS_PUSHBUTTON, 0, ID_GOBTN);
         g_typesbtn = MakeCtl(L"BUTTON", L"File types: all", BS_PUSHBUTTON, 0, ID_TYPES);
         g_bmBtn   = MakeCtl(L"BUTTON", L"Bookmarks", BS_PUSHBUTTON, 0, ID_BOOKMARKS);
+        g_bulkBtn = MakeCtl(L"BUTTON", L"Bulk ZIP", BS_PUSHBUTTON, 0, ID_BULKZIP);
         g_zipstop = MakeCtl(L"BUTTON", L"Stop ZIP", BS_PUSHBUTTON, 0, ID_ZIPSTOP);
         ShowWindow(g_zipstop, SW_HIDE);
         SendMessageW(g_gopath, EM_SETCUEBANNER, TRUE, (LPARAM)L"Paste any path and press Enter to go to it");
@@ -4343,6 +4581,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_GOBTN:      GoToPath(); break;
         case ID_TYPES:      ShowTypesDialog(); break;
         case ID_BOOKMARKS:  ShowBookmarksMenu(); break;
+        case ID_BULKZIP:    ShowBulkZip(); break;
         case ID_BMSTAR:     ToggleBookmark(); break;
         case ID_ZIPSTOP:    StopZip(); break;
         case ID_PLAYSND: if (IsSoundOut(g_cur)) OpenSound(g_cur); break;
@@ -4383,8 +4622,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (i != CB_ERR && SendMessageW(g_out, CB_GETLBTEXTLEN, i, 0) < PATHBUF) {
                     SendMessageW(g_out, CB_GETLBTEXT, i, (LPARAM)t);
                     SetWindowTextW(g_out, t);
-                    { wchar_t fol[PATHBUF]; if (LinkedFolder(t, fol, PATHBUF)) SetWindowTextW(g_romfs, fol); }   // (the game folder it was extracted from)
+                    wchar_t fol[PATHBUF]; BOOL linked = LinkedFolder(t, fol, PATHBUF);
+                    if (linked) SetWindowTextW(g_romfs, fol);       // (the game folder it was extracted from)
                     LoadTree(TRUE);
+                    // a scan from before the links (build .170) or never linked: its remembered dump folder, else the
+                    // "from:" line of its scan log - and link it now, dated 0 so it never beats a real extraction
+                    if (!linked && g_root[0] && ScanSource(t, fol) && fol[0]) {
+                        SetWindowTextW(g_romfs, fol);
+                        WritePrivateProfileStringW(L"linked", t, NULL, g_ini);
+                        wchar_t v[PATHBUF + 40]; swprintf(v, PATHBUF + 40, L"0000000000000000|%ls", fol);
+                        WritePrivateProfileStringW(L"linked", t, v, g_ini);
+                    }
                 }
             }
             break;
@@ -4627,10 +4875,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetStatus(st);
             wchar_t m[PATHBUF * 2 + 200];
             swprintf(m, PATHBUF * 2 + 200, L"%ls\n\nSaved to:\n%ls\n\nShow it in Explorer?", st, j->out);
+            if (j->note && j->note[0]) {                  // Bulk ZIP: what couldn't be found (the rest is in the ZIP)
+                size_t nl = wcslen(j->note) + wcslen(m) + 64; wchar_t *mm = (wchar_t *)xalloc(nl * sizeof(wchar_t));
+                if (mm) { swprintf(mm, nl, L"%ls\n\n%ls", j->note, m);
+                          if (MessageBoxW(hwnd, mm, L"ns2dig - Bulk ZIP", MB_YESNO | (wcsstr(j->note, L"couldn't be found") ? MB_ICONWARNING : MB_ICONINFORMATION)) == IDYES) ShowInExplorer(j->out, FALSE);
+                          xfree(mm); }
+            } else
             if (MessageBoxW(hwnd, m, L"ns2dig", MB_YESNO | MB_ICONINFORMATION) == IDYES) ShowInExplorer(j->out, FALSE);
         } else {
             SetStatus(L"ZIP failed.");
-            MessageBoxW(hwnd, j->err, L"ns2dig", MB_ICONWARNING);
+            if (j->note && j->note[0]) { wchar_t m2[1200]; swprintf(m2, 1200, L"%ls\n\n%.900ls", j->err, j->note); MessageBoxW(hwnd, m2, L"ns2dig", MB_ICONWARNING); }
+            else MessageBoxW(hwnd, j->err, L"ns2dig", MB_ICONWARNING);
         }
         FreeZipJob(j);
         return 0;

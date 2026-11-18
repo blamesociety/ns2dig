@@ -75,7 +75,9 @@ typedef void (APIENTRY *PFNDeleteBuffers)(GLsizei, const GLuint *);
 #define V3_TIMER_PROGRESS 2
 #define V3_TIMER_ANIM 3
 #define V3_TIMER_FX 4
-enum { V3_PROPS = 1986, V3_LANDMARKS = 1987, V3_HELPER = 1988, V3_CLOTHSIM = 1989, V3_CLOTH = 1990, V3_LOD = 2001, V3_CUT, V3_RESET, V3_EXPORT, V3_LIST, V3_ALL, V3_NONE, V3_INFO, V3_HELP, V3_CUTLBL, V3_MATLBL, V3_ANIM, V3_PLAY, V3_FRAME, V3_ANIMFILE, V3_ATTACH, V3_SPEED, V3_KEEP, V3_SORT, V3_FIND, V3_COLOUR, V3_OVERLAY, V3_TOPVIEW, V3_PNG, V3_PROBES, V3_CTLBTN, V3_COORD, V3_SOUNDS, V3_SAVEVIEW };
+#define V3_TIMER_CSIZE 5
+#define V3_TIMER_WALK 6
+enum { V3_PROPS = 1986, V3_LANDMARKS = 1987, V3_HELPER = 1988, V3_CLOTHSIM = 1989, V3_CLOTH = 1990, V3_LOD = 2001, V3_CUT, V3_RESET, V3_EXPORT, V3_LIST, V3_ALL, V3_NONE, V3_INFO, V3_HELP, V3_CUTLBL, V3_MATLBL, V3_ANIM, V3_PLAY, V3_FRAME, V3_ANIMFILE, V3_ATTACH, V3_SPEED, V3_KEEP, V3_SORT, V3_FIND, V3_COLOUR, V3_OVERLAY, V3_TOPVIEW, V3_PNG, V3_PROBES, V3_CTLBTN, V3_COORD, V3_SOUNDS, V3_SAVEVIEW, V3_CSIZE, V3_CSIZELBL, V3_WALK, V3_WDET, V3_WDETLBL, V3_WCOLL, V3_WHGT, V3_WHGTLBL, V3_WJMP, V3_WJMPLBL, V3_WSPD, V3_WSPDLBL };
 
 /* placed objects of the MKW world (Banc\World_Game03 + World_Game03-Free), read once per dump and kept: */
 typedef struct { char nm[96]; float T[3], R[3], S[3]; unsigned char gridify, resident, sphere; } V3Act;   // sphere: the PrimitiveType - 0 none / other (Cone, Camera...), 1 Sphere, 2 Cylinder(HighRes), 3 Cube
@@ -83,6 +85,7 @@ typedef struct { char nm[96]; float T[3], R[3], S[3]; unsigned char gridify, res
 // with it (ent: the list entry it's drawn as; why: why it isn't) - the "objects near" list reports from this
 typedef struct { char nm[96]; int count; float rad; signed char model; int ci; char ent[64]; char why[72]; } V3Name;   // (ci: this load's model)
 typedef struct {
+    HWND csl, cslbl; float collWant;    // the collectibles' size slider (1-100 x, log scale) and the size it's moving to
     HWND wnd, gl, info, lod, cut, cutlbl, reset, topb, pngb, exportb, matlbl, list, all, none, help, animCb, play, frame, animFileCb, attachCb, clothCb;
     HANDLE exportThread; volatile long exporting;
     HFONT font; int dpi;
@@ -137,6 +140,19 @@ typedef struct {
     size_t tris, verts;
     // camera
     float yaw, pitch, dist, panx, pany;
+    // walk the world (first person, Minecraft-style flying): position in the part's units, look angles, mouse captured
+    HWND walkCb, collCb; int wColl, wFly, wOnGround; float wVy;
+    int walk, wCap; float wpos[3], wyaw, wpitch, wEye, wMetre, wSpeedMul; DWORD wLastT, wLastSpace; POINT wCentre;
+    // walking's streaming: the whole world at low resolution kept as a backdrop, the previous full-detail square while the
+    // next one loads, the square's centre / size, the ground heights of the whole world, the "full detail" slider
+    struct V3Snap { int ok, stride; GLuint vbo[2]; float *cpuV; uint32_t *cpuI; float centre[3]; GLsizei nidx;
+                    struct V3SnapRun { GLsizei first, count; GLuint tex; float uvs; unsigned char kind, alpha; short rank; unsigned char col[3]; } *run; int nrun; } wBack;
+    // the full-detail tiles: a fixed grid of squares (size = the slider); the 2 x 2 nearest you are kept loaded, a spare
+    // or so more are kept so going back doesn't load again. Loaded one at a time through the normal area pipeline.
+    struct V3Tile { int tx, tz, stale; struct V3Snap s; float *h, ox, oz, st, cb[4]; int G;
+                    float *ct; int nct, cw, chh; int *cStart, *cIdx; float cx0, cz0, ccs; } wTile[6];   /* ct: its solid triangles (9 floats), in a grid of cells for collisions */ int wLoadTx, wLoadTz, wTileLoading, wLoadBuild, wLift, wGridN, wDbgBack;
+    char (*kgName)[VOX_MATN]; unsigned char *kgState; int nkg;   // list groups all ticked (1) / all unticked (2) before a reload
+    float *wGrid; int wGridW; float wGox, wGoz, wGst, wWorldW[4], wRadius; int wDet, wAreaOn; HWND wDetLbl, wDetSl, wHgtLbl, wHgtSl, wJmpLbl, wJmpSl, wSpdLbl, wSpdSl; float wHeight, wJump, wBR[4]; int wBROk;
     int dragging; POINT last;
     int cutPos;                      // 0..1000 (1000 = no cut)
     int fillingList;
@@ -845,8 +861,12 @@ typedef struct { V3 *v; long gen; int lod; unsigned char hidden[VOX_MAXMAT]; int
 static int V3IsWaterMat(const char *n) {
     static const char *k[] = { "Water", "Muddy water", "Lava", "Ghost swamp water", "Chocolate", "Aurora" };
     for (int i = 0; i < 6; i++) { size_t l = strlen(k[i]); if (!strncmp(n, k[i], l) && (!n[l] || n[l] == ':')) return 1; }
+    if (!strncmp(n, "Water kind ", 11)) return 1;     // the water layer's other kind bytes (4+)
     return 0;
 }
+// drawn as water (blue, see-through, the ripple texture): the water layer's entries, and the game's water surface models
+// (CmnObj_WaterSurface000_E: Peach Stadium's waterfall and pools - their own texture is a grey pattern meant for a water shader)
+static int V3DrawAsWater(const char *n) { return (V3IsWaterMat(n) && strncmp(n, "Lava", 4) && !strchr(n, ':')) || strstr(n, "WaterSurface") != NULL || (!strncmp(n, "Surface: Water", 14) && !strstr(n, "(walls)")); }
 /* the romfs folder a terrain scene belongs to: ...\TerrainArc\<scene>.tscb (Mario Kart World) -> ...; any other
    <romfs>\<folder>\<scene>.tscb -> <romfs> (the folder above the scene's folder; a tile <folder>\<scene>\<t>.hght: one more).
    In place; 0 if it can't tell. */
@@ -912,7 +932,7 @@ static unsigned char *V3ReadTex(const wchar_t *modelPath, const char *name, int 
 // their colour, a little see-through (drawn last, blended). Lava keeps its plain colour.
 static void V3LoadWaterTexture(V3 *v) {
     VoxPart *p = &v->part;
-    int any = 0; for (int k = 0; k < p->nmat && k < VOX_MAXMAT; k++) { v->waterBlend[k] = 0; if (V3IsWaterMat(p->matName[k]) && strncmp(p->matName[k], "Lava", 4) && !strchr(p->matName[k], ':')) any = 1; }
+    int any = 0; for (int k = 0; k < p->nmat && k < VOX_MAXMAT; k++) { v->waterBlend[k] = 0; if (V3DrawAsWater(p->matName[k])) any = 1; }
     if (!any || !p->tuv) return;
     // CmnTex_Tera_Water_Wat is only a 7 x 1 colour table; the ripple / foam patterns are in _Emm (128 x 128, BC1, 3 layers)
     char sname[200]; const char *name = "CmnTex_Tera_Water_Emm";
@@ -964,7 +984,7 @@ static void V3LoadWaterTexture(V3 *v) {
     }
     if (k < 0 || (!v->tex[k].rgba && !v->tex[k].id)) return;
     for (int m = 0; m < p->nmat && m < VOX_MAXMAT; m++)
-        if (V3IsWaterMat(p->matName[m]) && strncmp(p->matName[m], "Lava", 4) && !strchr(p->matName[m], ':')) { v->partTex[m] = k; v->waterBlend[m] = 1; v->terrTex++; }
+        if (V3DrawAsWater(p->matName[m])) { v->partTex[m] = k; v->waterBlend[m] = 1; v->terrTex++; }
 }
 static void V3LoadTerrainTextures(V3 *v) {
     VoxPart *p = &v->part;
@@ -1577,8 +1597,14 @@ static void V3AddSurfaceObjects(V3 *v) {
             if ((!ck || !strncmp(nm, "Stage_", 6) || !strncmp(ck, "Landmark:", 9)) && m->tmat && m->startHidden[m->tmat[k]]) continue;                // far / spare versions (cliffs: keep every part -
                                                                                        // their walls are flagged hidden too)
             const uint32_t *q = m->ti + k * 3;
+            if (q[0] >= m->ntv || q[1] >= m->ntv || q[2] >= m->ntv) continue;   // (a bad index would write past the arrays: crash)
             float mx = 0, mz = 0; for (int c = 0; c < 3; c++) { mx += tmp[q[c] * 3] / 3; mz += tmp[q[c] * 3 + 2] / 3; }
-            if (mx < ax0 || mx > ax1 || mz < az0 || mz > az1) continue;
+            if (v->walk) {      // walking's tiles: every triangle reaching into the tile (a big lake / sea surface triangle whose middle is
+                                // in a tile not loaded left a gap); water is cut to the tile's own square when drawn
+                float x0 = 1e30f, x1 = -1e30f, z0 = 1e30f, z1 = -1e30f;
+                for (int c = 0; c < 3; c++) { float X = tmp[q[c] * 3], Z = tmp[q[c] * 3 + 2]; if (X < x0) x0 = X; if (X > x1) x1 = X; if (Z < z0) z0 = Z; if (Z > z1) z1 = Z; }
+                if (x1 < ax0 || x0 > ax1 || z1 < az0 || z0 > az1) continue;
+            } else if (mx < ax0 || mx > ax1 || mz < az0 || mz > az1) continue;
             uint32_t *o = p->ti + (nt0 + added) * 3;
             for (int c = 0; c < 3; c++) {
                 if (remap[q[c]] < 0) {
@@ -1816,7 +1842,7 @@ static void V3MissionLine(V3 *v, const char *ms, wchar_t *out, int n) {
    CmnObj_HatenaBlockPanel000_A). V3CollectPoints reads every point (and finds its placed object: rotation, scale,
    mission) before the objects are placed - those placed objects are then left to V3AddCollectibles, which draws each
    as the game's model at its real size, one entry per list ("Marker: PSwitch"), on the whole map too. The size can
-   be enlarged (right-click the view > Collectible size), about each one's lowest point so it stays on its ground.
+   be enlarged (the size slider under the options, 1-100 x), about each one's lowest point so it stays on its ground.
    Inside an island (its own coordinates): drawn at the island's way in. */
 static void V3CollectPoints(V3 *v) {
     v->ncpt = 0; v->nclist = 0;
@@ -1917,6 +1943,24 @@ static void V3CollApplyScale(V3 *v) {
             for (int q = 0; q < 3; q++) t[q] = c->A[q] + (o[q] - c->A[q]) * s;
         }
     }
+}
+// the size slider: position 0-200 = 1 x to 100 x on a log scale (10 ^ (pos / 100)); 0.1 steps below 10 x, whole ones above
+static float V3CollFromPos(int pos) { float s = powf(10.0f, pos / 100.0f); return s < 10 ? roundf(s * 10) / 10 : roundf(s); }
+static int V3CollToPos(float s) { int p = (int)lroundf(100.0f * log10f(s > 1 ? s : 1)); return p < 0 ? 0 : p > 200 ? 200 : p; }
+static void V3CollLabel(V3 *v, float s) {
+    wchar_t t[120];
+    if (s <= 1) swprintf(t, 120, L"P-switches, ? panels, medallions: real size");
+    else swprintf(t, 120, L"P-switches, ? panels, medallions: %g \x00D7 their size", s);
+    SetWindowTextW(v->cslbl, t);
+}
+static void V3CollSliderSync(V3 *v) {               // the slider shows the current size
+    if (!v->csl) return;
+    SendMessageW(v->csl, TBM_SETPOS, TRUE, V3CollToPos(V3CollS(v))); V3CollLabel(v, V3CollS(v));
+}
+// the info text's "shown N x their size" line for each collectible list
+static void V3CollTexts(V3 *v) {
+    for (int k = 0; k < v->ncoll; k++) { char *t3 = strstr(v->coll[k].txt, "\nshown "); if (t3) *t3 = 0;
+        if (V3CollS(v) != 1) { size_t L = strlen(v->coll[k].txt); snprintf(v->coll[k].txt + L, sizeof v->coll[k].txt - L, "\nshown %g x their size", V3CollS(v)); } }
 }
 static void V3AddCollectibles(V3 *v) {
     VoxPart *p = &v->part; v->ncoll = 0; v->ncinst = 0; free(v->cinst); v->cinst = NULL; free(v->corig); v->corig = NULL;
@@ -2113,8 +2157,13 @@ static void V3AddGridifyPieces(V3 *v) {
                 }
                 if (matOf[pt] < 0) continue;
                 const uint32_t *q = m->ti + k * 3;
+                if (q[0] >= m->ntv || q[1] >= m->ntv || q[2] >= m->ntv) continue;   // (a bad index would write past the arrays: crash)
                 float tx = 0, tz = 0; for (int c = 0; c < 3; c++) { tx += (m->tv[q[c] * 3] + offx + half) / 3; tz += (m->tv[q[c] * 3 + 2] + offz + half) / 3; }
-                if (tx < ax0 || tx > ax1 || tz < az0 || tz > az1) continue;
+                if (v->walk) {  // walking's tiles: every triangle reaching into the tile (see the placed objects)
+                    float x0 = 1e30f, x1 = -1e30f, z0 = 1e30f, z1 = -1e30f;
+                    for (int c = 0; c < 3; c++) { float X = m->tv[q[c] * 3] + offx + half, Z = m->tv[q[c] * 3 + 2] + offz + half; if (X < x0) x0 = X; if (X > x1) x1 = X; if (Z < z0) z0 = Z; if (Z > z1) z1 = Z; }
+                    if (x1 < ax0 || x0 > ax1 || z1 < az0 || z0 > az1) continue;
+                } else if (tx < ax0 || tx > ax1 || tz < az0 || tz > az1) continue;
                 uint32_t *o = p->ti + (nt0 + added) * 3;
                 for (int c = 0; c < 3; c++) {
                     if (remap[q[c]] < 0) {
@@ -2555,7 +2604,7 @@ static int V3AddShape(V3 *v, const V3Act *A, const char *label, int shown) {
                 n2 = m; memcpy(poly, tmpp, sizeof(float) * 3 * (size_t)m);
             }
         }
-        if (n2 < 3) return 0;
+        if (n2 < 3) continue;                         // (this triangle is outside the area shown - the rest of the shape still is)
         for (int c = 0; c < n2; c++) { memcpy(p->tv + (nv0 + av + c) * 3, poly[c], 12); p->tuv[(nv0 + av + c) * 2] = p->tuv[(nv0 + av + c) * 2 + 1] = 0; }
         for (int c = 1; c + 1 < n2; c++) {
             uint32_t *o = p->ti + (nt0 + at) * 3; o[0] = (uint32_t)(nv0 + av); o[1] = (uint32_t)(nv0 + av + c); o[2] = (uint32_t)(nv0 + av + c + 1);
@@ -2584,6 +2633,7 @@ static int V3LoadTerrainGrid(V3 *v) {
     int grid = v->lodSel == 1 ? 2048 : 1024;
     float x = 0, z = 0, sz = 0; int ovl = -1;
     if (!wcsncmp(v->geom, L"terrainarea:", 12)) swscanf(v->geom + 12, L"%f,%f,%f,%d", &x, &z, &sz, &ovl);
+    if (v->walk && v->wGridN > 0) grid = v->wGridN;     // walking's tiles: the finest samples, the same spacing in every tile
     if (ovl > 0 && ovl < VOV_COUNT && !v->ovlFromParent) { v->ovlSel = ovl; v->ovlFromParent = 1; v->ovlFresh = 1; }   // opened from a view showing a layer
     g_voxOverlay = v->ovlSel;                        // (this loading thread only)
     V3Stage(v, L"Loading the ground tiles...", 20);
@@ -2596,15 +2646,20 @@ static int V3LoadTerrainGrid(V3 *v) {
         V3AddAreas(v); V3AddCollectibles(v);
         V3Stage(v, L"Loading the ground textures...", 810); V3LoadTerrainTextures(v);
         V3LoadModelTextures(v);
-        V3Stage(v, L"Loading the light probes...", 930); V3LoadProbes(v);
-        V3Stage(v, L"Loading the sound probes...", 960); V3LoadSounds(v);
+        if (!v->walk) {                                   // (walking: not needed, and slow)
+            V3Stage(v, L"Loading the light probes...", 930); V3LoadProbes(v);
+            V3Stage(v, L"Loading the sound probes...", 960); V3LoadSounds(v);
+        }
         V3Stage(v, L"Finishing...", 990);
         for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++)                     // see-through, drawn last: areas, markers / shapes
             if (!strncmp(v->part.matName[k], "Area:", 5) || !strncmp(v->part.matName[k], "Marker:", 7) || strstr(v->part.matName[k], "(no model)")) {
                 int solid = 0; for (int c = 0; c < v->ncoll; c++) if (v->coll[c].mat == k) solid = 1;   // (collectibles: solid)
                 if (!solid) v->waterBlend[k] = 2;
             }
-        VoxPart *p = &v->part;                          // a texture that couldn't be read: that scenery keeps its plain colour
+        VoxPart *p = &v->part;
+        if (p->ttex) for (size_t t = 0; t < p->nti; t++)                       // water surface models: drawn as water, not with their own texture
+            if (p->ttex[t] != 0xFFFF && p->tmat[t] < p->nmat && V3DrawAsWater(p->matName[p->tmat[t]])) p->ttex[t] = 0xFFFF;
+        // a texture that couldn't be read: that scenery keeps its plain colour
         if (p->ttex) for (size_t t = 0; t < p->nti; t++) if (p->ttex[t] != 0xFFFF && (p->ttex[t] >= v->nmtex || v->mtexTex[p->ttex[t]] < 0)) p->ttex[t] = 0xFFFF;
     }
     return ok;
@@ -2684,6 +2739,7 @@ static void V3StartJob(V3 *v, int doLoad) {
 }
 
 // the whole terrain: load it again from the tiles for the chosen resolution (low: the 21 biggest tiles; full: 85)
+static void V3MatCat(V3 *v, int id, char out[VOX_MATN]);
 static void V3ReloadWorld(V3 *v) {
     if (v->thread) { v->reloadPending = 1; v->cancel = 1; return; }
     if (v->partOk && v->part.nmat) {                      // remember the list's ticks by name (the next area / level has its own entries)
@@ -2696,7 +2752,30 @@ static void V3ReloadWorld(V3 *v) {
             v->keepHidden[q] = v->hidden[k];
         }
     }
-    if (v->dropKeep) { v->nkeep = 0; v->dropKeep = 0; }   // back to game colours from a layer: the usual ticks again
+    // whole groups ticked / unticked: things new to the next area follow them. Remembered for every group met so far (a group
+    // that isn't in this area keeps its state: an Area type unticked earlier stays unticked when it turns up again later)
+    if (v->partOk && v->part.nmat) {
+        int n = v->part.nmat < VOX_MAXMAT ? v->part.nmat : VOX_MAXMAT;
+        char (*gn)[VOX_MATN] = (char (*)[VOX_MATN])calloc((size_t)n, VOX_MATN); unsigned char *gs = (unsigned char *)calloc((size_t)n, 1); int ng = 0;
+        if (gn && gs) {
+            for (int k = 0; k < n; k++) {
+                char g[VOX_MATN]; V3MatCat(v, k, g);       // (the list's own groups)
+                int q = 0; while (q < ng && strcmp(gn[q], g)) q++;
+                if (q == ng) { snprintf(gn[q], VOX_MATN, "%s", g); gs[q] = 3; ng++; }
+                gs[q] &= v->hidden[k] ? 2 : 1;              // 1 = all ticked, 2 = all unticked, 0 = mixed
+            }
+            char (*kn)[VOX_MATN] = (char (*)[VOX_MATN])realloc(v->kgName, (size_t)(v->nkg + ng) * VOX_MATN);
+            unsigned char *ks = (unsigned char *)realloc(v->kgState, (size_t)(v->nkg + ng));
+            if (kn) v->kgName = kn; if (ks) v->kgState = ks;
+            if (kn && ks) for (int q = 0; q < ng; q++) {
+                int r = 0; while (r < v->nkg && strcmp(v->kgName[r], gn[q])) r++;
+                if (r == v->nkg) { snprintf(v->kgName[r], VOX_MATN, "%s", gn[q]); v->nkg++; }
+                v->kgState[r] = gs[q];
+            }
+        }
+        free(gn); free(gs);
+    }
+    if (v->dropKeep) { v->nkeep = 0; v->dropKeep = 0; v->nkg = 0; }   // back to game colours from a layer: the usual ticks again
     v->partOk = 0; v->rebuildPending = 0;
     VoxFreePart(&v->part);
     memset(v->hidden, 0, sizeof v->hidden);
@@ -2705,8 +2784,15 @@ static void V3ReloadWorld(V3 *v) {
     v->loading = 1;
     V3StartJob(v, 1);
 }
+static void V3WalkPump(V3 *v);
 static void V3RequestBuild(V3 *v) {
     if (!v->partOk) return;
+    if (v->walk && v->wAreaOn) {
+        // a tick changed: the kept tiles load again with the new ticks (by name), nearest first. A tile that has just
+        // loaded (wLoadBuild) is built as usual - that's how its mesh is made.
+        if (!v->wLoadBuild) for (int t = 0; t < 6; t++) v->wTile[t].stale = 1;
+        if (!v->wTileLoading) { V3WalkPump(v); return; }
+    }
     if (v->thread) { v->rebuildPending = 1; v->cancel = 1; return; }
     swprintf(v->status, 256, L"Building the surface...");
     V3StartJob(v, 0);
@@ -2755,10 +2841,10 @@ static void V3UpdateInfo(V3 *v) {
         for (size_t i = 0; i < p->ntv; i++) for (int k = 0; k < 3; k++) { float q = p->tv[i * 3 + k]; if (q < lo[k]) lo[k] = q; if (q > hi[k]) hi[k] = q; }
         wchar_t tv[64], tt[64]; V3Num(tv, 64, (double)p->ntv); V3Num(tt, 64, (double)p->nti);
         if (!strncmp(p->shapeType, "terrain", 7)) {
-            swprintf(t, 1600, L"Terrain height map: %hs\r\nSize: %.1f \x00D7 %.1f \x00D7 %.1f\r\nVertices: %ls   Triangles: %ls\r\n%ls: %d\r\nTriangles shown: %ls\r\n%ls",
+            swprintf(t, 1600, L"Terrain height map: %hs\r\nSize: %.1f \x00D7 %.1f \x00D7 %.1f\r\nVertices: %ls   Triangles: %ls\r\n%ls: %d%ls%ls\r\n%ls",
                      p->shapeType, p->ntv ? hi[0] - lo[0] : 0, p->ntv ? hi[1] - lo[1] : 0, p->ntv ? hi[2] - lo[2] : 0, tv, tt,
                      p->gcol && p->overlay ? L"Ground coloured by the chosen layer; ground materials" : p->gcol ? L"Game colours (color_mul2); ground materials" : !strncmp(p->matName[0], "height band", 11) ? L"Height bands (no .mate file beside it)" : L"Ground materials (from the .mate file)", p->nmat,
-                     v->haveMesh ? c : L"-", v->status);
+                     v->walk ? L"" : L"\r\nTriangles shown: ", v->walk ? L"" : v->haveMesh ? c : L"-", v->status);
             if (v->nprb && v->prbSel > 0) {
                 size_t l = wcslen(t); wchar_t pn[64]; V3Num(pn, 64, (double)v->nprb);
                 if (v->prbSel <= 8) swprintf(t + l, 1600 - l, L"\r\nLight probes (%hs%hs): %ls dots, values %d-%d as red, green, blue (square root; full at %.3g)", v->prbFile, v->nprbFine ? " + finer .dlpg grids" : "", pn, (v->prbSel - 1) * 3 + 1, (v->prbSel - 1) * 3 + 3, v->prbHi[0]);
@@ -2795,7 +2881,7 @@ static void V3InitGL(V3 *v) {
     PIXELFORMATDESCRIPTOR pfd; ZeroMemory(&pfd, sizeof(pfd));
     pfd.nSize = sizeof(pfd); pfd.nVersion = 1;
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    pfd.iPixelType = PFD_TYPE_RGBA; pfd.cColorBits = 24; pfd.cDepthBits = 24; pfd.iLayerType = PFD_MAIN_PLANE;
+    pfd.iPixelType = PFD_TYPE_RGBA; pfd.cColorBits = 24; pfd.cDepthBits = 24; pfd.cStencilBits = 8; pfd.iLayerType = PFD_MAIN_PLANE;   // (stencil: walking's detail over the backdrop)
     int pf = ChoosePixelFormat(v->dc, &pfd);
     if (!pf || !SetPixelFormat(v->dc, pf, &pfd)) return;
     v->rc = wglCreateContext(v->dc);
@@ -3125,15 +3211,733 @@ static void V3PickAnimFile(V3 *v, int i) {
     V3FillAnimFiles(v); V3FillAnims(v); V3UpdateInfo(v);
 }
 
+
+/* ------------------------------------------------------------------ walk the world (first person)
+   The whole-world view seen from inside it, the right way up (Y up), at a person's eye height. Minecraft-style flying:
+   WASD move, the mouse looks around (click the view to capture it, Esc lets it go), Space up, Shift down, Ctrl faster,
+   the scroll wheel sets the speed. Stage 1: the loaded world mesh as it is (streaming in full detail and collisions come next). */
+static void V3WalkRelease(V3 *v) {
+    if (!v->wCap) return;
+    v->wCap = 0; ClipCursor(NULL); ShowCursor(TRUE); ReleaseCapture();
+}
+static void V3WalkCapture(V3 *v) {
+    if (v->wCap) return;
+    RECT rc; GetClientRect(v->gl, &rc); MapWindowPoints(v->gl, NULL, (POINT *)&rc, 2);
+    v->wCentre.x = (rc.left + rc.right) / 2; v->wCentre.y = (rc.top + rc.bottom) / 2;
+    ClipCursor(&rc); ShowCursor(FALSE); SetCapture(v->gl); SetCursorPos(v->wCentre.x, v->wCentre.y);
+    v->wCap = 1; SetFocus(v->gl);
+}
+static void V3WalkInfo(V3 *v);
+
+// ---- snapshots: a mesh kept on the graphics card with what's needed to draw it (the world backdrop, the last square)
+// walking: mouse up / down turned round (the Controls window's tick box), kept in the program's .ini ([3d] walk_invert)
+static int g_walkInvert = -1;
+static void V3WalkIni(wchar_t *ini, size_t n) { GetModuleFileNameW(NULL, ini, (DWORD)n); wchar_t *d = wcsrchr(ini, L'.'); if (d) wcscpy(d, L".ini"); }
+static int V3WalkInverted(void) {
+    if (g_walkInvert < 0) { wchar_t ini[1024]; V3WalkIni(ini, 1024); g_walkInvert = GetPrivateProfileIntW(L"3d", L"walk_invert", 0, ini) ? 1 : 0; }
+    return g_walkInvert;
+}
+static void V3WalkSetInverted(int on) {
+    g_walkInvert = on ? 1 : 0; wchar_t ini[1024]; V3WalkIni(ini, 1024);
+    WritePrivateProfileStringW(L"3d", L"walk_invert", on ? L"1" : L"0", ini);
+}
+static void V3UploadTextures(V3 *v);
+static void V3Layout(V3 *v);
+static void V3SnapFree(V3 *v, struct V3Snap *S) {
+    if (!S->ok) return;
+    if (v->rc) wglMakeCurrent(v->dc, v->rc);
+    if (S->vbo[0] && v->glDeleteBuffers_) v->glDeleteBuffers_(2, S->vbo);
+    free(S->cpuV); free(S->cpuI); free(S->run);
+    memset(S, 0, sizeof *S);
+}
+// moves the current mesh into S (the viewer then has no mesh of its own until the next one arrives)
+static void V3SnapTake(V3 *v, struct V3Snap *S) {
+    V3SnapFree(v, S);
+    if (!v->haveMesh) return;
+    V3UploadTextures(v);
+    S->stride = v->stride ? v->stride : 20; S->nidx = v->nidx; memcpy(S->centre, v->drawCentre, 12);
+    S->vbo[0] = v->vbo[0]; S->vbo[1] = v->vbo[1]; v->vbo[0] = v->vbo[1] = 0;
+    S->cpuV = v->cpuVert; S->cpuI = v->cpuIdx; v->cpuVert = NULL; v->cpuIdx = NULL;
+    int terr = S->stride == 28 && v->nruns && (v->terrTex || v->nmtex);
+    S->run = (struct V3SnapRun *)calloc(terr ? v->nruns : 1, sizeof *S->run);
+    if (!S->run) { S->ok = 1; V3SnapFree(v, S); v->haveMesh = 0; return; }
+    if (!terr) { S->run[0].first = 0; S->run[0].count = v->nidx; S->run[0].kind = 4; S->nrun = 1; }
+    else for (int r = 0; r < v->nruns; r++) {
+        struct V3SnapRun *R = &S->run[S->nrun]; int rm = v->runs[r].mat;
+        R->first = v->runs[r].first; R->count = v->runs[r].count; R->uvs = 1;
+        if (rm >= VOX_MAXMAT) {                          // placed scenery: its own texture
+            int sl = rm - VOX_MAXMAT, k = sl < v->nmtex ? v->mtexTex[sl] : -1;
+            R->tex = k >= 0 ? v->tex[k].id : 0; R->alpha = k >= 0 && v->tex[k].alpha; R->rank = (short)(sl < 4000 ? sl : 4000);
+            R->kind = R->tex && sl < v->nmtex && strstr(v->mtexName[sl], "Lava") ? 3 : 2;
+        } else if (v->waterBlend[rm] == 2) {              // invisible areas / markers (when ticked): their list colour, see-through
+            R->kind = 5; VoxMatColour(&v->part, rm, R->col);
+        } else {
+            int k = v->partTex[rm]; R->tex = k >= 0 ? v->tex[k].id : 0;
+            if (v->waterBlend[rm]) { if (!R->tex) continue; R->kind = 1; }
+            else {
+                int gm = v->part.terrMat[rm]; R->uvs = gm >= 0 ? VoxTeraUVScale((unsigned)gm) : 1;
+                // the ground itself (0), or a placed thing without a texture of its own / a ground piece ("Scenery: ...", 6):
+                // drawn alike, but 6 counts as scenery (the far-off world's copy is cut out of the loaded squares)
+                R->kind = gm >= 0 && rm < v->part.nmat && !strstr(v->part.matName[rm], ": ") ? 0 : 6;
+            }
+        }
+        S->nrun++;
+    }
+    free(v->runs); v->runs = NULL; v->nruns = 0;
+    v->haveMesh = 0; S->ok = 1;
+}
+// cb: x0, z0, x1, z1 (the part's units) - the ground and water are cut to that square (a tile's own; its neighbours have the rest)
+static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
+    if (!S->ok) return;
+    if (cb) {                                              // (planes in the current view's space: the part's units - drawCentre)
+        double e[4][4] = { { 1, 0, 0, -(cb[0] - v->drawCentre[0]) }, { -1, 0, 0, cb[2] - v->drawCentre[0] },
+                           { 0, 0, 1, -(cb[1] - v->drawCentre[2]) }, { 0, 0, -1, cb[3] - v->drawCentre[2] } };
+        for (int k = 0; k < 4; k++) glClipPlane(GL_CLIP_PLANE0 + k, e[k]);
+    }
+    glPushMatrix(); glTranslatef(S->centre[0] - v->drawCentre[0], S->centre[1] - v->drawCentre[1], S->centre[2] - v->drawCentre[2]);
+    const char *base = NULL; int vbo = S->vbo[0] != 0;
+    if (vbo) { v->glBindBuffer_(GL_ARRAY_BUFFER_, S->vbo[0]); v->glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER_, S->vbo[1]); } else base = (const char *)S->cpuV;
+    int st = S->stride;
+    glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_NORMAL_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3, GL_FLOAT, st, base); glNormalPointer(GL_BYTE, st, base + 12); glColorPointer(3, GL_UNSIGNED_BYTE, st, base + 16);
+    if (st == 28) glTexCoordPointer(2, GL_FLOAT, st, base + 20);
+    for (int pass = 0; pass < 2; pass++) {                 // opaque, then water (blended, not hiding what's under it)
+        // (passes: 1 = solid, 2 = water and areas, 3 = everything, 4 = water only, 8 = areas only)
+        if (pass ? !(passes & (2 | 4 | 8)) : !(passes & 1)) continue;
+        if (pass) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
+        for (int r = 0; r < S->nrun; r++) {
+            const struct V3SnapRun *R = &S->run[r];
+            if ((R->kind == 1 || R->kind == 5) != pass) continue;
+            if (R->kind == 1 && !(passes & (2 | 4))) continue;
+            if (R->kind == 5 && !(passes & (2 | 8))) continue;
+            if (R->kind == 5) {                                // an area: see-through sides in its list colour, stronger edges
+                const void *at = vbo ? (const void *)((size_t)R->first * 4) : (const void *)(S->cpuI + R->first);
+                if (cb) for (int k = 0; k < 4; k++) glEnable(GL_CLIP_PLANE0 + k);     // (each tile draws its own part of a big area)
+                glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisable(GL_TEXTURE_2D); glDisable(GL_LIGHTING);
+                glStencilMask(0);                              // (see-through: the far-off world behind it must still be drawn)
+                glColor4ub(R->col[0], R->col[1], R->col[2], 95); glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, at);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); glLineWidth(1.5f);
+                glColor4ub(R->col[0], R->col[1], R->col[2], 200); glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, at);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); glLineWidth(1); glEnable(GL_LIGHTING); glEnableClientState(GL_COLOR_ARRAY); glStencilMask(0xFF);
+                for (int k = 0; k < 4; k++) glDisable(GL_CLIP_PLANE0 + k);
+                continue;
+            }
+            if (R->tex && st == 28) {
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, R->tex);
+                if (R->kind <= 1 || R->kind == 6) {            // ground / water (and ground pieces): colour x detail texture, x2
+                    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, 0x8570); glTexEnvi(GL_TEXTURE_ENV, 0x8571, GL_MODULATE);
+                    glTexEnvi(GL_TEXTURE_ENV, 0x8580, GL_TEXTURE); glTexEnvi(GL_TEXTURE_ENV, 0x8581, 0x8577); glTexEnvf(GL_TEXTURE_ENV, 0x8573, 2.0f);
+                    glMatrixMode(GL_TEXTURE); glLoadIdentity(); glScalef(R->uvs, R->uvs, 1); glMatrixMode(GL_MODELVIEW);
+                } else {
+                    glTexEnvf(GL_TEXTURE_ENV, 0x8573, 1.0f); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+                    glMatrixMode(GL_TEXTURE); glLoadIdentity(); glMatrixMode(GL_MODELVIEW);
+                    if (R->alpha) { glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.4f); }
+                }
+            } else { glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisable(GL_TEXTURE_2D); }
+            if (R->kind == 3) glDisable(GL_LIGHTING);
+            if (S == &v->wBack && v->wBROk && (R->kind == 2 || R->kind == 3 || R->kind == 6)) {
+                // the far-off world's scenery: only outside the loaded squares (inside, the squares have it - or it's unticked):
+                // four pieces round the squares' rectangle, each cut by planes (in this snapshot's own space)
+                const float *B = v->wBR; float c0 = S->centre[0], c2 = S->centre[2];
+                double pl[4][3][4] = { { { -1, 0, 0, B[0] - c0 } }, { { 1, 0, 0, -(B[2] - c0) } },
+                                       { { 1, 0, 0, -(B[0] - c0) }, { -1, 0, 0, B[2] - c0 }, { 0, 0, -1, B[1] - c2 } },
+                                       { { 1, 0, 0, -(B[0] - c0) }, { -1, 0, 0, B[2] - c0 }, { 0, 0, 1, -(B[3] - c2) } } };
+                int npl[4] = { 1, 1, 3, 3 };
+                if (R->alpha) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.5f, -6); }
+                for (int q = 0; q < 4; q++) {
+                    for (int k = 0; k < npl[q]; k++) { glClipPlane(GL_CLIP_PLANE0 + k, pl[q][k]); glEnable(GL_CLIP_PLANE0 + k); }
+                    glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, vbo ? (const void *)((size_t)R->first * 4) : (const void *)(S->cpuI + R->first));
+                    for (int k = 0; k < npl[q]; k++) glDisable(GL_CLIP_PLANE0 + k);
+                }
+                glDisable(GL_POLYGON_OFFSET_FILL);
+                if (R->kind == 3) glEnable(GL_LIGHTING);
+                glDisable(GL_ALPHA_TEST);
+                continue;
+            }
+            if (cb && R->kind <= 1) for (int k = 0; k < 4; k++) glEnable(GL_CLIP_PLANE0 + k);
+            // layering: the ground a little behind, see-through decals (road lines) a little in front of what they lie on
+            if (R->kind == 0) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(1.5f, 6); }
+            else if (R->kind == 2 && R->alpha) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.5f, -6); }
+            glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, vbo ? (const void *)((size_t)R->first * 4) : (const void *)(S->cpuI + R->first));
+            glDisable(GL_POLYGON_OFFSET_FILL);
+            for (int k = 0; k < 4; k++) glDisable(GL_CLIP_PLANE0 + k);
+            if (R->kind == 3) glEnable(GL_LIGHTING);
+            glDisable(GL_ALPHA_TEST);
+        }
+        if (pass) { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
+    }
+    glMatrixMode(GL_TEXTURE); glLoadIdentity(); glMatrixMode(GL_MODELVIEW);
+    glTexEnvf(GL_TEXTURE_ENV, 0x8573, 1.0f); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glDisable(GL_TEXTURE_2D); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glBindTexture(GL_TEXTURE_2D, 0);
+    if (vbo) { v->glBindBuffer_(GL_ARRAY_BUFFER_, 0); v->glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER_, 0); }
+    glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_NORMAL_ARRAY); glDisableClientState(GL_COLOR_ARRAY);
+    glPopMatrix();
+}
+// after the current full-detail square: the previous one where the new one hasn't drawn, then the world where neither has
+static const float kWalkDet[11] = { 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64 };   // full-detail square sizes (.tscb units; x250 = game units: 500 .. 16000; the top ones for testing the limits)
+static float V3WalkNear(V3 *v);
+static void V3WalkStep(V3 *v);
+static int V3WalkWanted(V3 *v, int out[4][2]);
+static int V3WalkTileFind(V3 *v, int tx, int tz);
+static void V3WalkDrawSnaps(V3 *v) {
+    {   // the rectangle the loaded squares round you fill (only if they fill it): the far-off world's scenery isn't drawn inside it
+        int w[4][2], n = V3WalkWanted(v, w), x0 = 1 << 30, z0 = 1 << 30, x1 = -1, z1 = -1, got = 0;
+        for (int k = 0; k < n; k++) { int t = V3WalkTileFind(v, w[k][0], w[k][1]); if (t < 0) continue; got++;
+            if (w[k][0] < x0) x0 = w[k][0]; if (w[k][0] > x1) x1 = w[k][0]; if (w[k][1] < z0) z0 = w[k][1]; if (w[k][1] > z1) z1 = w[k][1]; }
+        v->wBROk = got && got == (x1 - x0 + 1) * (z1 - z0 + 1);
+        if (v->wBROk) {
+            float A = kWalkDet[v->wDet], W2 = v->wWorldW[2], W3 = v->wWorldW[3];
+            v->wBR[0] = x0 * A * W2; v->wBR[1] = z0 * A * W2; v->wBR[2] = fminf((x1 + 1) * A, W3) * W2; v->wBR[3] = fminf((z1 + 1) * A, W3) * W2;
+        }
+    }
+    glEnable(GL_DEPTH_TEST); glEnable(GL_LIGHTING); glEnable(GL_LIGHT0); glEnable(GL_COLOR_MATERIAL); glEnable(GL_NORMALIZE);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);       // the tiles mark their pixels
+    // every tile's solid parts first, then every tile's water: water drawn before a neighbour's sea floor was painted over
+    // by it where you look through the water across the tiles' edge (strips "opening up" in lakes and the sea)
+    for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 1);
+    // the tiles' water: first only marked (stencil bit 2, nothing drawn) where it's seen. Looking through it near a tile's edge the
+    // ray goes on past the tile's cut sea floor - there the far-off world's sea floor must be drawn UNDER this water (before,
+    // the far-off world's floor and its own water were drawn over it: a lighter strip along the tiles' edges near land)
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); glStencilMask(2); glStencilFunc(GL_ALWAYS, 2, 2); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 4);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilMask(0); glStencilFunc(GL_ALWAYS, 0, 0xFF); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);   // areas: see-through, marking nothing
+    for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 8);
+    glStencilMask(0xFF);
+    if (v->wBack.ok) {
+        // the backdrop, only where no tile is (stencil), in two depth ranges of its own: the far part (horizon) first, then
+        // the near part over it - each with fine depth steps (no flicker), and nothing near you cut away by a far-off near plane
+        GLfloat pm[16]; glGetFloatv(GL_PROJECTION_MATRIX, pm);
+        RECT rc; GetClientRect(v->gl, &rc); float w = (float)(rc.right > 1 ? rc.right : 1), h = (float)(rc.bottom > 1 ? rc.bottom : 1);
+        float split = kWalkDet[v->wDet] * (v->wWorldW[2] > 0 ? v->wWorldW[2] : 250);
+        // the two ranges overlap a little for the solid parts (no crack where the sea floor crosses from one to the other - seen
+        // through the water as a thin light line moving with you); the far range's water starts exactly at the split (a cut
+        // plane), so the water isn't drawn twice in the overlap
+        float rng[2][2] = { { split * 0.9f, v->wRadius * 2.5f + 10 }, { V3WalkNear(v), split } };
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        for (int r = 0; r < 2; r++) {
+            float nearp = rng[r][0], farp = rng[r][1], fy = nearp * 0.62f, fx = fy * w / h;
+            glClear(GL_DEPTH_BUFFER_BIT);
+            glMatrixMode(GL_PROJECTION); glLoadIdentity(); glFrustum(-fx, fx, -fy, fy, nearp, farp); glMatrixMode(GL_MODELVIEW);
+            glStencilFunc(GL_EQUAL, 0, 1);                      // solids: wherever no tile's solid is (also under a tile's water)
+            V3SnapDraw(v, &v->wBack, NULL, 1);
+            glStencilFunc(GL_EQUAL, 0, 3);                      // water / areas: only where no tile's water will be drawn either
+            if (r == 0) {
+                glPushMatrix(); glLoadIdentity();
+                { double e[4] = { 0, 0, -1, -split }; glClipPlane(GL_CLIP_PLANE4, e); }      // (eye space: only beyond the split)
+                glPopMatrix(); glEnable(GL_CLIP_PLANE4);
+                V3SnapDraw(v, &v->wBack, NULL, 2);
+                glDisable(GL_CLIP_PLANE4);
+            } else V3SnapDraw(v, &v->wBack, NULL, 2);
+        }
+        glMatrixMode(GL_PROJECTION); glLoadMatrixf(pm); glMatrixMode(GL_MODELVIEW);
+    }
+    // now the tiles' water, over whatever is under it. The depth buffer holds the far-off world's by now, so the tiles' solid parts
+    // go into it again (depth only, nothing drawn) and the water is drawn with the usual depth test - every layer, nearest in
+    // front (a waterfall in front of a lake, pools beside the sea, water under an island stays hidden)
+    if (v->wBack.ok) {
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); glStencilMask(0); glStencilFunc(GL_ALWAYS, 0, 0xFF);
+        for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 1);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
+    glStencilMask(0); glStencilFunc(GL_ALWAYS, 0, 0xFF); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 4);
+    glStencilMask(0xFF);
+    if (v->wDbgBack) {                                          // B: everything drawn by the low-detail world gets a red tint
+        glStencilFunc(GL_EQUAL, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST); glDisable(GL_TEXTURE_2D); glDisable(GL_LIGHTING); glDisable(GL_FOG); glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
+        glDisableClientState(GL_COLOR_ARRAY);
+        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+        glColor4f(1, 0, 0, 0.35f);
+        glBegin(GL_QUADS); glVertex2f(-1, -1); glVertex2f(1, -1); glVertex2f(1, 1); glVertex2f(-1, 1); glEnd();
+        glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW);
+        glPopAttrib(); glDepthMask(GL_TRUE); glEnableClientState(GL_COLOR_ARRAY);
+    }
+    glDisable(GL_STENCIL_TEST);
+}
+// the ground under x, z: the full-detail square if it covers the spot, else the whole world's heights; 0 = no ground known
+static float V3WalkGround(V3 *v, float x, float z, int *in) {
+    for (int t = 0; t < 6; t++) {                       // the full-detail tiles' own ground (the same heights as drawn)
+        struct V3Tile *T = &v->wTile[t]; if (!T->s.ok || !T->h || T->G < 2) continue;
+        float fx = (x - T->ox) / T->st, fz = (z - T->oz) / T->st; int G = T->G;
+        if (fx < 0 || fz < 0 || fx > G - 1 || fz > G - 1) continue;
+        int ix = (int)fx, iz = (int)fz; if (ix > G - 2) ix = G - 2; if (iz > G - 2) iz = G - 2;
+        float ax = fx - ix, az = fz - iz; const float *H = T->h + (size_t)iz * G + ix;
+        *in = 1; return (H[0] * (1 - ax) + H[1] * ax) * (1 - az) + (H[G] * (1 - ax) + H[G + 1] * ax) * az;
+    }
+    if (v->partOk && v->part.gridW > 1) { float g = V3GridH(&v->part, x, z, in); if (*in) return g; }
+    *in = 0;
+    if (!v->wGrid || v->wGridW < 2) return 0;
+    float fx = (x - v->wGox) / v->wGst, fz = (z - v->wGoz) / v->wGst; int G = v->wGridW;
+    if (fx < 0 || fz < 0 || fx > G - 1 || fz > G - 1) return 0;
+    int ix = (int)fx, iz = (int)fz; if (ix > G - 2) ix = G - 2; if (iz > G - 2) iz = G - 2;
+    float tx = fx - ix, tz = fz - iz; const float *H = v->wGrid;
+    float a = H[(size_t)iz * G + ix] * (1 - tx) + H[(size_t)iz * G + ix + 1] * tx, b = H[(size_t)(iz + 1) * G + ix] * (1 - tx) + H[(size_t)(iz + 1) * G + ix + 1] * tx;
+    *in = 1; return a * (1 - tz) + b * tz;
+}
+// the player's height (game units: the map's metres), from the slider: 1 to 10 in halves; eyes at 93 % of it
+static void V3WalkHgtLabel(V3 *v) {
+    wchar_t t[120]; swprintf(t, 120, L"Player height: %.1f (eyes %.1f above the feet)", v->wHeight, v->wHeight * 0.93f);
+    SetWindowTextW(v->wHgtLbl, t);
+}
+static void V3WalkJmpLabel(V3 *v);
+static void V3WalkSetHeight(V3 *v, float h) {
+    if (h < 1) h = 1; if (h > 10) h = 10;
+    float feet = v->wpos[1] - v->wEye;
+    v->wHeight = h; v->wEye = h * 0.93f; if (v->walk) v->wpos[1] = feet + v->wEye;
+    wchar_t ini[1024], b[16]; V3WalkIni(ini, 1024); swprintf(b, 16, L"%d", (int)(h * 10 + 0.5f)); WritePrivateProfileStringW(L"3d", L"walk_player_height", b, ini);
+    if (v->wHgtSl) SendMessageW(v->wHgtSl, TBM_SETPOS, TRUE, (LPARAM)(int)((h - 1) * 2 + 0.5f));
+    if (v->wHgtLbl) V3WalkHgtLabel(v);
+    if (v->wJmpLbl) V3WalkJmpLabel(v);
+}
+// the jump's height: a share of the player's height, 25 % to 500 % in quarters (slider 0-19)
+static void V3WalkJmpLabel(V3 *v) {
+    wchar_t t[120]; swprintf(t, 120, L"Jump height: %.0f %% of the player (%.1f)", v->wJump * 100, v->wJump * v->wHeight);
+    SetWindowTextW(v->wJmpLbl, t);
+}
+static void V3WalkSetJump(V3 *v, float j) {
+    if (j < 0.25f) j = 0.25f; if (j > 5) j = 5; v->wJump = j;
+    wchar_t ini[1024], b[16]; V3WalkIni(ini, 1024); swprintf(b, 16, L"%d", (int)(j * 100 + 0.5f)); WritePrivateProfileStringW(L"3d", L"walk_jump_pct", b, ini);
+    if (v->wJmpSl) SendMessageW(v->wJmpSl, TBM_SETPOS, TRUE, (LPARAM)(int)(j * 4 - 1 + 0.5f));
+    if (v->wJmpLbl) V3WalkJmpLabel(v);
+}
+// the speed (1 x to 100 x): the slider and the mouse wheel
+static void V3WalkSetSpeed(V3 *v, float m) {
+    m = roundf(m); if (m < 1) m = 1; if (m > 100) m = 100; v->wSpeedMul = m;
+    if (v->wSpdSl) SendMessageW(v->wSpdSl, TBM_SETPOS, TRUE, (LPARAM)(int)m);
+    if (v->wSpdLbl) { wchar_t t[80]; swprintf(t, 80, L"Walking speed: %.0f\x00D7 (the mouse wheel too)", m); SetWindowTextW(v->wSpdLbl, t); }
+}
+static float V3WalkNear(V3 *v) { float n = v->wHeight * 0.08f; return n > 0.02f ? n : 0.02f; }   // (well inside the body's radius: no seeing into walls)
+static void V3WalkDetLabel(V3 *v) {
+    wchar_t t[120]; float W2 = v->part.terrWorld[2] > 0 ? v->part.terrWorld[2] : 250;
+    swprintf(t, 120, L"Full detail around you: %.0f \x00D7 %.0f units", kWalkDet[v->wDet] * W2, kWalkDet[v->wDet] * W2);
+    SetWindowTextW(v->wDetLbl, t);
+}
+// ---- tiles: (tx, tz) covers .tscb x from world min x + tx * size (the slider's size), the same for z
+static int V3WalkTileCount(V3 *v) { float A = kWalkDet[v->wDet]; int n = (int)ceilf(v->wWorldW[3] / A - 0.001f); return n > 0 ? n : 1; }
+static int V3WalkTileFind(V3 *v, int tx, int tz) { for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok && v->wTile[t].tx == tx && v->wTile[t].tz == tz) return t; return -1; }
+// the 2 x 2 tiles nearest you (the one you're in first), as tx / tz pairs; returns how many
+static int V3WalkWanted(V3 *v, int out[4][2]) {
+    float A = kWalkDet[v->wDet] * v->wWorldW[2]; int N = V3WalkTileCount(v), n = 0;
+    float fx = v->wpos[0] / A, fz = v->wpos[2] / A;
+    int cx = (int)floorf(fx), cz = (int)floorf(fz); if (cx < 0) cx = 0; if (cz < 0) cz = 0; if (cx > N - 1) cx = N - 1; if (cz > N - 1) cz = N - 1;
+    int nx = fx - cx < 0.5f ? cx - 1 : cx + 1, nz = fz - cz < 0.5f ? cz - 1 : cz + 1;   // the neighbours on the nearer sides
+    int c[4][2] = { { cx, cz }, { nx, cz }, { cx, nz }, { nx, nz } };
+    for (int k = 0; k < 4; k++) if (c[k][0] >= 0 && c[k][1] >= 0 && c[k][0] < N && c[k][1] < N) { out[n][0] = c[k][0]; out[n][1] = c[k][1]; n++; }
+    return n;
+}
+// walking keeps every texture it has met (so going back is quick); at the big tile sizes that filled the table (4096) and
+// everything loaded after that had no textures at all - plain colours, even back at small sizes. When it's 3/4 full, the
+// textures no kept tile / the backdrop draws with are let go (the ground layers and water stay).
+static void V3WalkTexTidy(V3 *v) {
+    if (v->ntex < V3_MAXTEX * 3 / 4) return;
+    GLuint *used = NULL; size_t nu = 0, cu = 0;
+    struct V3Snap *S[7]; int ns = 0; for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) S[ns++] = &v->wTile[t].s; if (v->wBack.ok) S[ns++] = &v->wBack;
+    for (int i = 0; i < ns; i++) for (int r = 0; r < S[i]->nrun; r++) if (S[i]->run[r].tex) {
+        if (nu == cu) { cu = cu ? cu * 2 : 1024; GLuint *u = (GLuint *)realloc(used, cu * sizeof *u); if (!u) { free(used); return; } used = u; }
+        used[nu++] = S[i]->run[r].tex;
+    }
+    int out = 0;
+    for (int t = 0; t < v->ntex; t++) {
+        int keep = !strncmp(v->tex[t].key, "tera|", 5) || !strncmp(v->tex[t].key, "water|", 6);
+        for (size_t k = 0; k < nu && !keep; k++) if (v->tex[t].id && used[k] == v->tex[t].id) keep = 1;
+        if (keep) { if (out != t) v->tex[out] = v->tex[t]; out++; }
+        else { if (v->tex[t].id) glDeleteTextures(1, &v->tex[t].id); free(v->tex[t].rgba); }
+    }
+    for (int t = out; t < v->ntex; t++) { v->tex[t].rgba = NULL; v->tex[t].id = 0; v->tex[t].key[0] = 0; }
+    v->ntex = out; v->nmtex = 0;            // (the part is about to load again: its own texture list is rebuilt)
+    free(used);
+}
+// starts loading tile (tx, tz) through the normal area pipeline; its mesh becomes a tile when it arrives
+static void V3WalkLoadTile(V3 *v, int tx, int tz) {
+    V3WalkTexTidy(v);
+    float A = kWalkDet[v->wDet], W0 = v->wWorldW[0], W1 = v->wWorldW[1], W3 = v->wWorldW[3];
+    float ax = W0 + tx * A, az = W1 + tz * A;
+    if (ax + A > W0 + W3) ax = W0 + W3 - A; if (az + A > W1 + W3) az = W1 + W3 - A;      // (the last row / column: kept inside the world)
+    if (ax < W0) ax = W0; if (az < W1) az = W1;
+    // loaded 4 ground samples bigger on every side, on the same sample spacing as its neighbours (so the edges match);
+    // drawn cut to its own square, so no gap or crack shows where two tiles meet
+    int G0 = (int)(A * 512); if (G0 < 1024) G0 = 1024; if (G0 > 2048) G0 = 2048;
+    float st = A / G0;
+    v->wGridN = G0 + 8;
+    swprintf(v->geom, 2048, L"terrainarea:%.9g,%.9g,%.9g,%d", ax - 4 * st, az - 4 * st, A + 8 * st, v->ovlSel);
+    v->wLoadTx = tx; v->wLoadTz = tz; v->wTileLoading = 1; v->wAreaOn = 1;
+    V3ReloadWorld(v);
+}
+// the next tile to load, if any: the one you're in first, then the nearest; stale ones (ticks changed) again
+static void V3WalkPump(V3 *v) {
+    if (!v->walk || v->thread || v->loading || v->wTileLoading) return;
+    int w[4][2], n = V3WalkWanted(v, w);
+    for (int k = 0; k < n; k++) { int t = V3WalkTileFind(v, w[k][0], w[k][1]); if (t < 0 || v->wTile[t].stale) { V3WalkLoadTile(v, w[k][0], w[k][1]); return; } }
+}
+// collisions: the tile's solid triangles (not the gridded ground - its heights do that - nor water, areas, markers or what's
+// unticked), kept in a grid of cells over the tile's square so the few near you are found at once
+static void V3ColFree(struct V3Tile *T);
+static void V3ColBuild(V3 *v, struct V3Tile *T) {
+    V3ColFree(T);
+    VoxPart *p = &v->part; if (!p->tv || !p->ti || !p->tmat) return;
+    size_t g0 = p->gridW > 1 ? (size_t)(p->gridW - 1) * (p->gridW - 1) * 2 : 0;     // (the gridded ground comes first)
+    float m = v->wEye * 2, x0 = T->cb[0] - m, z0 = T->cb[1] - m, x1 = T->cb[2] + m, z1 = T->cb[3] + m;
+    size_t n = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t t = g0; t < p->nti; t++) {
+            unsigned mt = p->tmat[t]; if (mt >= VOX_MAXMAT || v->hidden[mt] || v->waterBlend[mt]) continue;
+            const uint32_t *q = p->ti + t * 3; if (q[0] >= p->ntv || q[1] >= p->ntv || q[2] >= p->ntv) continue;
+            const float *a = p->tv + q[0] * 3, *b = p->tv + q[1] * 3, *c = p->tv + q[2] * 3;
+            float lx = fminf(a[0], fminf(b[0], c[0])), hx = fmaxf(a[0], fmaxf(b[0], c[0])), lz = fminf(a[2], fminf(b[2], c[2])), hz = fmaxf(a[2], fmaxf(b[2], c[2]));
+            if (hx < x0 || lx > x1 || hz < z0 || lz > z1) continue;
+            if (pass) { memcpy(T->ct + n * 9, a, 12); memcpy(T->ct + n * 9 + 3, b, 12); memcpy(T->ct + n * 9 + 6, c, 12); }
+            n++;
+        }
+        if (!pass) { if (!n || !(T->ct = (float *)malloc(n * 9 * sizeof(float)))) return; n = 0; }
+    }
+    T->nct = (int)n;
+    T->ccs = v->wEye * 1.5f; if (T->ccs < 1) T->ccs = 1;
+    T->cx0 = x0; T->cz0 = z0; T->cw = (int)ceilf((x1 - x0) / T->ccs); T->chh = (int)ceilf((z1 - z0) / T->ccs);
+    if (T->cw < 1) T->cw = 1; if (T->chh < 1) T->chh = 1;
+    if ((size_t)T->cw * T->chh > 4000000) { T->ccs *= 4; T->cw = (int)ceilf((x1 - x0) / T->ccs); T->chh = (int)ceilf((z1 - z0) / T->ccs); }
+    size_t nc = (size_t)T->cw * T->chh;
+    T->cStart = (int *)calloc(nc + 1, sizeof(int)); int *cur = NULL;
+    if (!T->cStart) { V3ColFree(T); return; }
+    for (int pass = 0; pass < 2; pass++) {                 // count per cell, then fill (cell ci's triangles: cIdx[cStart[ci] .. cStart[ci + 1]))
+        for (int i = 0; i < T->nct; i++) {
+            const float *c = T->ct + (size_t)i * 9;
+            int ax = (int)((fminf(c[0], fminf(c[3], c[6])) - x0) / T->ccs), bx = (int)((fmaxf(c[0], fmaxf(c[3], c[6])) - x0) / T->ccs);
+            int az = (int)((fminf(c[2], fminf(c[5], c[8])) - z0) / T->ccs), bz = (int)((fmaxf(c[2], fmaxf(c[5], c[8])) - z0) / T->ccs);
+            if (ax < 0) ax = 0; if (az < 0) az = 0; if (bx >= T->cw) bx = T->cw - 1; if (bz >= T->chh) bz = T->chh - 1;
+            for (int zz = az; zz <= bz; zz++) for (int xx = ax; xx <= bx; xx++) {
+                size_t ci = (size_t)zz * T->cw + xx;
+                if (!pass) T->cStart[ci + 1]++; else T->cIdx[cur[ci]++] = i;
+            }
+        }
+        if (!pass) {
+            for (size_t ci = 0; ci < nc; ci++) T->cStart[ci + 1] += T->cStart[ci];
+            size_t tot = (size_t)T->cStart[nc];
+            if (tot > 200000000 || !(T->cIdx = (int *)malloc((tot ? tot : 1) * sizeof(int))) || !(cur = (int *)malloc(nc * sizeof(int)))) { free(cur); V3ColFree(T); return; }
+            memcpy(cur, T->cStart, nc * sizeof(int));
+        }
+    }
+    free(cur);
+}
+// the tile that was loading has its mesh: keep it (replacing the same tile, else a free slot, else the farthest one not wanted)
+static void V3WalkTileArrived(V3 *v) {
+    v->wTileLoading = 0;
+    if (!v->haveMesh) return;
+    int t = V3WalkTileFind(v, v->wLoadTx, v->wLoadTz);
+    if (t < 0) for (int k = 0; k < 6 && t < 0; k++) if (!v->wTile[k].s.ok) t = k;
+    if (t < 0) {
+        int w[4][2], n = V3WalkWanted(v, w); float A = kWalkDet[v->wDet] * v->wWorldW[2], best = -1;
+        for (int k = 0; k < 6; k++) {
+            int want = 0; for (int q = 0; q < n; q++) if (v->wTile[k].tx == w[q][0] && v->wTile[k].tz == w[q][1]) want = 1;
+            if (want) continue;
+            float dx = (v->wTile[k].tx + 0.5f) * A - v->wpos[0], dz = (v->wTile[k].tz + 0.5f) * A - v->wpos[2], d = dx * dx + dz * dz;
+            if (d > best) { best = d; t = k; }
+        }
+        if (t < 0) t = 0;
+    }
+    V3SnapTake(v, &v->wTile[t].s);
+    struct V3Tile *T = &v->wTile[t];
+    T->tx = v->wLoadTx; T->tz = v->wLoadTz; T->stale = 0;
+    {   float A = kWalkDet[v->wDet], W2 = v->wWorldW[2], W3 = v->wWorldW[3];
+        T->cb[0] = T->tx * A * W2; T->cb[1] = T->tz * A * W2;
+        T->cb[2] = fminf((T->tx + 1) * A, W3) * W2; T->cb[3] = fminf((T->tz + 1) * A, W3) * W2; }
+    free(T->h); T->h = NULL; T->G = 0;                    // its ground heights, for walking on it (the drawn ground, not the backdrop's)
+    VoxPart *p = &v->part; int G = p->gridW;
+    if (G > 1 && p->tv && (T->h = (float *)malloc((size_t)G * G * sizeof(float))) != NULL) {
+        for (size_t i = 0; i < (size_t)G * G; i++) T->h[i] = p->tv[i * 3 + 1];
+        T->G = G; T->ox = p->tv[0]; T->oz = p->tv[2]; T->st = p->tv[3] - p->tv[0];
+    }
+    V3ColBuild(v, T);                                     // its solid triangles, for collisions
+    if (v->wLift) {                                       // just started: 5 above this tile's ground, once it's known
+        int in = 0; float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
+        if (in) { v->wpos[1] = g + v->wEye + 21; v->wLift = 0; v->wVy = 0; v->wOnGround = 0; V3WalkInfo(v); }
+    }
+}
+static void V3ColFree(struct V3Tile *T) { free(T->ct); free(T->cStart); free(T->cIdx); T->ct = NULL; T->cStart = T->cIdx = NULL; T->nct = T->cw = T->chh = 0; }
+static void V3WalkTilesFree(V3 *v) { for (int t = 0; t < 6; t++) { V3SnapFree(v, &v->wTile[t].s); free(v->wTile[t].h); v->wTile[t].h = NULL; v->wTile[t].G = 0; V3ColFree(&v->wTile[t]); } v->wTileLoading = 0; }
+static void V3WalkStart(V3 *v) {
+    VoxPart *p = &v->part;
+    if (!v->haveMesh || !v->partOk || v->thread || !(p->terrWorld[2] > 0) || p->gridW < 2 || wcscmp(v->geom, L"terrainworld")) {
+        SendMessageW(v->walkCb, BM_SETCHECK, BST_UNCHECKED, 0);
+        if (v->thread) MessageBoxW(v->wnd, L"Wait for the view to finish loading first.", L"Walk the world", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    // eye height: about 1.7 times a P-switch (the collectibles are the game's own models at real size), else 1.7 units
+    float eye = 1.7f;
+    if (v->ncinst) { float hs[64]; int nh = 0; for (int i = 0; i < v->ncinst && nh < 64; i++) if (v->cinst[i].h > 0) hs[nh++] = v->cinst[i].h;
+        if (nh) { for (int a = 0; a < nh; a++) for (int b = a + 1; b < nh; b++) if (hs[b] < hs[a]) { float t = hs[a]; hs[a] = hs[b]; hs[b] = t; }
+                  float med = hs[nh / 2] / (v->collScale > 1 ? v->collScale : 1); if (med > 0.05f && med < 50) eye = med * 1.7f; } }
+    // a game-sized person: the collectibles' height is about a metre; the player is about 3 m tall (eyes at 2.8 m) - not real,
+    // but at a person's real height the world looks as if seen from near the ground (user 23:31)
+    v->wMetre = eye / 1.7f;                                 // (speeds and gravity: in these "metres")
+    {   wchar_t ini[1024]; V3WalkIni(ini, 1024); int hh = GetPrivateProfileIntW(L"3d", L"walk_player_height", 35, ini);
+        v->wHeight = hh / 10.0f; if (v->wHeight < 1) v->wHeight = 1; if (v->wHeight > 10) v->wHeight = 10; }
+    v->wEye = v->wHeight * 0.93f; eye = v->wEye;
+    {   wchar_t ini[1024]; V3WalkIni(ini, 1024); v->wJump = GetPrivateProfileIntW(L"3d", L"walk_jump_pct", 75, ini) / 100.0f;
+        if (v->wJump < 0.25f) v->wJump = 0.25f; if (v->wJump > 5) v->wJump = 5; }
+    // the whole world: its square, its ground heights (for walking outside the detailed square) and the mesh as a backdrop
+    int G1 = p->gridW; v->wGox = p->tv[0]; v->wGoz = p->tv[2]; v->wGst = p->tv[3] - p->tv[0];
+    memcpy(v->wWorldW, p->terrWorld, sizeof v->wWorldW);
+    free(v->wGrid); v->wGrid = (float *)malloc((size_t)G1 * G1 * sizeof(float)); v->wGridW = v->wGrid ? G1 : 0;
+    if (v->wGrid) for (size_t i = 0; i < (size_t)G1 * G1; i++) v->wGrid[i] = p->tv[i * 3 + 1];
+    float cx = v->wGox + v->wGst * (G1 - 1) / 2, cz = v->wGoz + v->wGst * (G1 - 1) / 2; int in = 0;
+    float gy = V3GridH(p, cx, cz, &in);
+    {   // start at x 0, z 0 (as shown: the world's middle), height 5 - lifted to eye height if the ground there is higher
+        float half = p->terrWorld[3] * p->terrWorld[2] / 2;
+        cx = half; cz = half; gy = V3GridH(p, cx, cz, &in);
+        v->wpos[0] = cx; v->wpos[2] = cz; v->wpos[1] = (in ? gy : 0) + eye + 21;  // ("21 above the ground" in the info box: you drop onto it)
+    }
+    v->wyaw = 0; v->wpitch = 0; v->walk = 1; v->wLastT = GetTickCount(); v->wLift = 1;
+    {   wchar_t ini[1024]; V3WalkIni(ini, 1024); v->wColl = GetPrivateProfileIntW(L"3d", L"walk_collide", 1, ini) ? 1 : 0; }
+    v->wFly = 0; v->wVy = 0; v->wOnGround = 0; v->wLastSpace = 0;
+    SendMessageW(v->collCb, BM_SETCHECK, v->wColl ? BST_CHECKED : BST_UNCHECKED, 0); ShowWindow(v->collCb, SW_SHOW);
+    v->wRadius = v->radius; V3SnapTake(v, &v->wBack);
+    EnableWindow(v->lod, FALSE);                          // (the resolution: the squares are full detail, the backdrop as loaded)
+    ShowWindow(v->wDetLbl, SW_SHOW); ShowWindow(v->wDetSl, SW_SHOW); V3WalkDetLabel(v);
+    SendMessageW(v->wHgtSl, TBM_SETPOS, TRUE, (LPARAM)(int)((v->wHeight - 1) * 2 + 0.5f)); V3WalkHgtLabel(v);
+    ShowWindow(v->wHgtLbl, SW_SHOW); ShowWindow(v->wHgtSl, SW_SHOW);
+    SendMessageW(v->wJmpSl, TBM_SETPOS, TRUE, (LPARAM)(int)(v->wJump * 4 - 1 + 0.5f)); V3WalkJmpLabel(v);
+    ShowWindow(v->wJmpLbl, SW_SHOW); ShowWindow(v->wJmpSl, SW_SHOW);
+    V3WalkSetSpeed(v, v->wSpeedMul); ShowWindow(v->wSpdLbl, SW_SHOW); ShowWindow(v->wSpdSl, SW_SHOW);
+    ShowWindow(v->ovlCb, SW_HIDE); V3Layout(v);
+    SetTimer(v->wnd, V3_TIMER_WALK, 15, NULL);
+    V3WalkPump(v);                                          // the full-detail tiles around you
+    V3WalkCapture(v); V3WalkInfo(v);
+    InvalidateRect(v->gl, NULL, FALSE);
+}
+static void V3WalkStop(V3 *v) {
+    V3WalkRelease(v); v->walk = 0; KillTimer(v->wnd, V3_TIMER_WALK);
+    if (v->walkCb) SendMessageW(v->walkCb, BM_SETCHECK, BST_UNCHECKED, 0);
+    ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE); ShowWindow(v->wHgtLbl, SW_HIDE); ShowWindow(v->wHgtSl, SW_HIDE); ShowWindow(v->wJmpLbl, SW_HIDE); ShowWindow(v->wJmpSl, SW_HIDE); ShowWindow(v->wSpdLbl, SW_HIDE); ShowWindow(v->wSpdSl, SW_HIDE); ShowWindow(v->collCb, SW_HIDE); EnableWindow(v->lod, TRUE);
+    V3WalkTilesFree(v); V3SnapFree(v, &v->wBack); free(v->wGrid); v->wGrid = NULL; v->wGridW = 0;
+    if (v->wAreaOn) {                                        // back to the whole world
+        v->wAreaOn = 0; swprintf(v->geom, 2048, L"terrainworld");
+        if (v->haveMesh) V3FreeGLMesh(v);
+        v->viewPending = 1; V3ReloadWorld(v);
+    }
+    swprintf(v->status, 256, L""); V3UpdateInfo(v); V3Layout(v);
+    InvalidateRect(v->gl, NULL, FALSE);
+}
+static void V3WalkInfo(V3 *v) {
+    float half = v->wWorldW[3] * v->wWorldW[2] / 2; int in = 0;
+    float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
+    // where you are: under Show all / Hide all (like the place under the cursor in the normal view); the keys: the Controls window
+    wchar_t c[200];
+    swprintf(c, 200, L"%ls: x %.0f, z %.0f, height %.0f (%.0f above the ground)",
+             !v->wColl ? L"Flying (collisions off)" : v->wFly ? L"Flying" : L"Walking",
+             v->wpos[0] - half, v->wpos[2] - half, v->wpos[1], in ? v->wpos[1] - v->wEye - g : 0.f);
+    wchar_t old[200]; GetWindowTextW(v->coord, old, 200); if (wcscmp(old, c)) SetWindowTextW(v->coord, c);
+    const wchar_t *st = v->loading ? L"Loading the full detail around you..." : L"";
+    if (wcscmp(v->status, st)) { swprintf(v->status, 256, L"%ls", st); V3UpdateInfo(v); }
+}
+static void V3WalkCheckArea(V3 *v) { V3WalkPump(v); }
+// ---- collisions (stage 4): the body is an upright capsule (feet .. head, radius) in the tiles' solid triangles, on their ground
+static void V3ColVisit(V3 *v, float x, float z, float rad, void (*fn)(void *, const float *), void *ctx) {
+    for (int t = 0; t < 6; t++) {
+        struct V3Tile *T = &v->wTile[t]; if (!T->s.ok || !T->cIdx || !T->cStart) continue;
+        int ax = (int)floorf((x - rad - T->cx0) / T->ccs), bx = (int)floorf((x + rad - T->cx0) / T->ccs);
+        int az = (int)floorf((z - rad - T->cz0) / T->ccs), bz = (int)floorf((z + rad - T->cz0) / T->ccs);
+        if (bx < 0 || bz < 0 || ax >= T->cw || az >= T->chh) continue;
+        if (ax < 0) ax = 0; if (az < 0) az = 0; if (bx >= T->cw) bx = T->cw - 1; if (bz >= T->chh) bz = T->chh - 1;
+        for (int zz = az; zz <= bz; zz++) for (int xx = ax; xx <= bx; xx++) {
+            size_t ci = (size_t)zz * T->cw + xx;
+            for (int k = T->cStart[ci]; k < T->cStart[ci + 1]; k++) fn(ctx, T->ct + (size_t)T->cIdx[k] * 9);
+        }
+    }
+}
+static void V3TriNormal(const float *c, float n[3]) {
+    float e1[3] = { c[3] - c[0], c[4] - c[1], c[5] - c[2] }, e2[3] = { c[6] - c[0], c[7] - c[1], c[8] - c[2] };
+    n[0] = e1[1] * e2[2] - e1[2] * e2[1]; n[1] = e1[2] * e2[0] - e1[0] * e2[2]; n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+    float l = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]); if (l > 0) { n[0] /= l; n[1] /= l; n[2] /= l; }
+}
+// the height of a triangle above / below (x, z), if (x, z) is inside it seen from above
+static int V3TriYAt(const float *c, float x, float z, float *y) {
+    float d = (c[5] - c[8]) * (c[0] - c[6]) + (c[6] - c[3]) * (c[2] - c[8]); if (fabsf(d) < 1e-12f) return 0;
+    float l1 = ((c[5] - c[8]) * (x - c[6]) + (c[6] - c[3]) * (z - c[8])) / d, l2 = ((c[8] - c[2]) * (x - c[6]) + (c[0] - c[6]) * (z - c[8])) / d, l3 = 1 - l1 - l2;
+    if (l1 < -1e-4f || l2 < -1e-4f || l3 < -1e-4f) return 0;
+    *y = l1 * c[1] + l2 * c[4] + l3 * c[7]; return 1;
+}
+struct V3ColQ { float x, z, lim, best; };
+static void V3ColFloorFn(void *ctx, const float *c) {      // highest floor not above lim
+    struct V3ColQ *q = (struct V3ColQ *)ctx; float n[3], y; V3TriNormal(c, n);
+    if (fabsf(n[1]) < 0.35f || !V3TriYAt(c, q->x, q->z, &y)) return;
+    if (y <= q->lim && y > q->best) q->best = y;
+}
+static void V3ColCeilFn(void *ctx, const float *c) {       // lowest ceiling not below lim
+    struct V3ColQ *q = (struct V3ColQ *)ctx; float n[3], y; V3TriNormal(c, n);
+    if (fabsf(n[1]) < 0.2f || !V3TriYAt(c, q->x, q->z, &y)) return;
+    if (y >= q->lim && y < q->best) q->best = y;
+}
+// what you stand on at (x, z): the ground, or a solid surface no higher than lim (your knee: steps up, not onto walls)
+static float V3ColGround(V3 *v, float x, float z, float lim) {
+    int in = 0; float g = V3WalkGround(v, x, z, &in);
+    struct V3ColQ q = { x, z, lim, in ? g : -1e30f };
+    V3ColVisit(v, x, z, 0, V3ColFloorFn, &q);
+    return q.best;
+}
+static float V3ColCeil(V3 *v, float x, float z, float lim) { struct V3ColQ q = { x, z, lim, 1e30f }; V3ColVisit(v, x, z, 0, V3ColCeilFn, &q); return q.best; }
+// the point of triangle c nearest p (Ericson, Real-Time Collision Detection 5.1.5)
+static void V3TriClosest(const float *p, const float *c, float o[3]) {
+    const float *a = c, *b = c + 3, *cc = c + 6; float ab[3], ac[3], ap[3], bp[3], cp[3];
+    for (int i = 0; i < 3; i++) { ab[i] = b[i] - a[i]; ac[i] = cc[i] - a[i]; ap[i] = p[i] - a[i]; bp[i] = p[i] - b[i]; cp[i] = p[i] - cc[i]; }
+    #define DOT(u, w) ((u)[0] * (w)[0] + (u)[1] * (w)[1] + (u)[2] * (w)[2])
+    float d1 = DOT(ab, ap), d2 = DOT(ac, ap); if (d1 <= 0 && d2 <= 0) { memcpy(o, a, 12); return; }
+    float d3 = DOT(ab, bp), d4 = DOT(ac, bp); if (d3 >= 0 && d4 <= d3) { memcpy(o, b, 12); return; }
+    float vc = d1 * d4 - d3 * d2; if (vc <= 0 && d1 >= 0 && d3 <= 0) { float t = d1 / (d1 - d3); for (int i = 0; i < 3; i++) o[i] = a[i] + t * ab[i]; return; }
+    float d5 = DOT(ab, cp), d6 = DOT(ac, cp); if (d6 >= 0 && d5 <= d6) { memcpy(o, cc, 12); return; }
+    float vb = d5 * d2 - d1 * d6; if (vb <= 0 && d2 >= 0 && d6 <= 0) { float t = d2 / (d2 - d6); for (int i = 0; i < 3; i++) o[i] = a[i] + t * ac[i]; return; }
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { float t = (d4 - d3) / ((d4 - d3) + (d5 - d6)); for (int i = 0; i < 3; i++) o[i] = b[i] + t * (cc[i] - b[i]); return; }
+    #undef DOT
+    float den = 1 / (va + vb + vc), vv = vb * den, ww = vc * den; for (int i = 0; i < 3; i++) o[i] = a[i] + ab[i] * vv + ac[i] * ww;
+}
+struct V3ColPush { float c[3], r; int hit; };
+static void V3ColPushFn(void *ctx, const float *t) {       // a ball against walls: pushed out sideways (floors / ceilings: see above)
+    struct V3ColPush *q = (struct V3ColPush *)ctx; float n[3]; V3TriNormal(t, n);
+    if (fabsf(n[1]) >= 0.7f) return;
+    float o[3]; V3TriClosest(q->c, t, o);
+    float dx = q->c[0] - o[0], dy = q->c[1] - o[1], dz = q->c[2] - o[2], d = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (d >= q->r) return;
+    float hx = dx, hz = dz, hl = sqrtf(hx * hx + hz * hz);
+    if (hl < 1e-5f) { hx = n[0]; hz = n[2]; hl = sqrtf(hx * hx + hz * hz); if (hl < 1e-5f) return; }
+    float push = q->r - d; if (d < 1e-5f) push = q->r;
+    q->c[0] += hx / hl * push; q->c[2] += hz / hl * push; q->hit = 1;
+}
+// a step with collisions on: sideways move (sliding along walls), then up / down (gravity or flying, the ground, ceilings)
+static void V3WalkPhys(V3 *v, float f, float r, float u, int sprint, float dt, float sa, float ca) {
+    float sc = v->wMetre > 0 ? v->wMetre : 1, H = v->wHeight > 0 ? v->wHeight : 3;
+    float rad = H * 0.17f, step = H * 0.25f, bodyH = H + H * 0.1f;          // (a bit of room over the eyes and round you: no seeing into walls / roofs)
+    float grav = 60.0f * sc * v->wSpeedMul, jumpV = sqrtf(2 * grav * H * (v->wJump > 0 ? v->wJump : 0.75f));   // gravity x the wheel speed; the jump: the slider's share of your height
+    float spd = (v->wFly ? 10.9f : 4.3f) * sc * v->wSpeedMul * (sprint ? (v->wFly ? 2.0f : 1.3f) : 1.0f);   // Minecraft: walk 4.3, fly 10.9 blocks a second
+    float mx = (sa * f + ca * r) * spd * dt, mz = (-ca * f + sa * r) * spd * dt;
+    float feet = v->wpos[1] - v->wEye, x = v->wpos[0], z = v->wpos[2];
+    int ns = (int)ceilf(sqrtf(mx * mx + mz * mz) / (rad * 0.5f)); if (ns < 1) ns = 1; if (ns > 64) ns = 64;
+    float sub = sqrtf(mx * mx + mz * mz) / ns;
+    for (int i = 0; i < ns; i++) {
+        x += mx / ns; z += mz / ns;
+        if (!v->wFly && v->wOnGround) {                    // walking up a slope (any speed): onto the floor ahead if it's within reach
+            float g2 = V3ColGround(v, x, z, feet + step + sub * 2.5f);   // (up to ~68 degrees)
+            if (g2 > feet) feet = g2;
+        }
+        for (int it = 0; it < 2; it++) {
+            float ys[3] = { feet + step + rad, feet + bodyH * 0.55f, feet + bodyH - rad };
+            for (int k = 0; k < 3; k++) {
+                if (k && ys[k] <= ys[0]) continue;
+                struct V3ColPush q = { { x, ys[k], z }, rad, 0 };
+                V3ColVisit(v, x, z, rad, V3ColPushFn, &q);
+                x = q.c[0]; z = q.c[2];
+            }
+        }
+    }
+    float dy;
+    if (v->wFly) { dy = u * spd * dt; v->wVy = 0; }
+    else {
+        if (u > 0 && v->wOnGround) v->wVy = jumpV;                        // jump (held: jumps again on landing)
+        v->wVy -= grav * dt; if (v->wVy < -120.0f * sc * v->wSpeedMul) v->wVy = -120.0f * sc * v->wSpeedMul;
+        dy = v->wVy * dt;
+    }
+    float nf = feet + dy;
+    if (dy > 0) {                                                          // a ceiling over your head
+        float c = V3ColCeil(v, x, z, feet + bodyH - 0.001f);
+        if (nf + bodyH > c) { nf = c - bodyH - 0.001f; if (nf < feet) nf = feet; v->wVy = 0; }
+    }
+    float gr = V3ColGround(v, x, z, (nf > feet ? nf : feet) + step);
+    int was = v->wOnGround;
+    if (nf <= gr) {
+        nf = gr; v->wOnGround = 1; if (!v->wFly) v->wVy = 0;
+        if (v->wFly && u < 0) v->wFly = 0;                                 // flying down onto the ground: landed (as in Minecraft)
+    } else if (!v->wFly && was && v->wVy <= 0 && nf - gr <= step) { nf = gr; v->wVy = 0; v->wOnGround = 1; }   // down a step
+    else v->wOnGround = 0;
+    v->wpos[0] = x; v->wpos[2] = z; v->wpos[1] = nf + v->wEye;
+}
+// collisions on / off (C or the tick box); remembered in the program's .ini ([3d] walk_collide)
+static void V3WalkSetColl(V3 *v, int on) {
+    v->wColl = on ? 1 : 0;
+    wchar_t ini[1024]; V3WalkIni(ini, 1024); WritePrivateProfileStringW(L"3d", L"walk_collide", on ? L"1" : L"0", ini);
+    if (v->collCb) SendMessageW(v->collCb, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+    v->wVy = 0; v->wOnGround = 0;
+    if (on) {                                             // turned on in the air: keep flying (double-tap Space to drop)
+        int in = 0; float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
+        v->wFly = in && v->wpos[1] - v->wEye - g > v->wHeight * 0.25f + 0.01f;
+    }
+    V3WalkInfo(v);
+}
+// one step of movement (the timer, about 60 a second): keys held now, scaled by the time since the last step
+static void V3WalkStep(V3 *v) {
+    DWORD now = GetTickCount(); float dt = (now - v->wLastT) / 1000.0f; v->wLastT = now;
+    if (dt > 0.1f) dt = 0.1f;
+    if (!v->wCap || GetForegroundWindow() != v->wnd) return;
+    #define KD(k) (GetAsyncKeyState(k) & 0x8000)
+    float f = 0, r = 0, u = 0;
+    if (KD('W')) f += 1; if (KD('S')) f -= 1; if (KD('D')) r += 1; if (KD('A')) r -= 1;
+    if (KD(VK_SPACE)) u += 1; if (KD(VK_SHIFT)) u -= 1;
+    float speed = 10.9f * v->wMetre * v->wSpeedMul * (KD(VK_CONTROL) ? 2.0f : 1.0f);   // Minecraft creative flight: ~11 blocks a second
+    int sprint = KD(VK_CONTROL) ? 1 : 0;
+    #undef KD
+    if (v->wColl && v->wLift) { V3WalkCheckArea(v); return; }   // (starting: wait in the air until the ground around you has loaded)
+    if (v->wColl) {                                       // collisions: gravity etc. every step, keys or not
+        float a = v->wyaw * 3.14159265f / 180, p0 = v->wpos[0], p1 = v->wpos[1], p2 = v->wpos[2];
+        float l = sqrtf(f * f + r * r); if (l > 1) { f /= l; r /= l; }
+        V3WalkPhys(v, f, r, u, sprint, dt, sinf(a), cosf(a));
+        float ox = v->wGox, oz = v->wGoz, ext = v->wGst * (v->wGridW - 1);
+        if (v->wGridW > 1) {
+            if (v->wpos[0] < ox) v->wpos[0] = ox; if (v->wpos[0] > ox + ext) v->wpos[0] = ox + ext;
+            if (v->wpos[2] < oz) v->wpos[2] = oz; if (v->wpos[2] > oz + ext) v->wpos[2] = oz + ext;
+        }
+        V3WalkCheckArea(v);
+        if (p0 != v->wpos[0] || p1 != v->wpos[1] || p2 != v->wpos[2]) { V3WalkInfo(v); InvalidateRect(v->gl, NULL, FALSE); }
+        return;
+    }
+    if (!f && !r && !u) { V3WalkCheckArea(v); return; }
+    float l = sqrtf(f * f + r * r); if (l > 1) { f /= l; r /= l; }
+    float a = v->wyaw * 3.14159265f / 180, sa = sinf(a), ca = cosf(a);
+    v->wpos[0] += (sa * f + ca * r) * speed * dt;
+    v->wpos[2] += (-ca * f + sa * r) * speed * dt;
+    v->wpos[1] += u * speed * dt;
+    // keep inside the world's square, and never under the ground (no collisions yet: the ground only)
+    float ox = v->wGox, oz = v->wGoz, ext = v->wGst * (v->wGridW - 1);
+    if (v->wGridW > 1) {
+        if (v->wpos[0] < ox) v->wpos[0] = ox; if (v->wpos[0] > ox + ext) v->wpos[0] = ox + ext;
+        if (v->wpos[2] < oz) v->wpos[2] = oz; if (v->wpos[2] > oz + ext) v->wpos[2] = oz + ext;
+    }
+    int in = 0; float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
+    if (in && v->wpos[1] < g + v->wEye * 0.6f) v->wpos[1] = g + v->wEye * 0.6f;
+    V3WalkCheckArea(v);
+    V3WalkInfo(v);
+    InvalidateRect(v->gl, NULL, FALSE);
+}
 static void V3Render(V3 *v) {
     if (!v->rc) return;
     wglMakeCurrent(v->dc, v->rc);
     RECT rc; GetClientRect(v->gl, &rc);
     int w = rc.right > 0 ? rc.right : 1, h = rc.bottom > 0 ? rc.bottom : 1;
     glViewport(0, 0, w, h);
-    glClearColor(0.13f, 0.14f, 0.16f, 1);
+    if (v->walk) glClearColor(0.58f, 0.76f, 0.95f, 1); else glClearColor(0.13f, 0.14f, 0.16f, 1);   // walking: a sky
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    if (v->haveMesh) {
+    if (v->walk && (v->haveMesh || v->wBack.ok)) {   // first person: perspective from the eye, the world the right way up
+        float wfar = (v->wRadius > 0 ? v->wRadius : v->radius) * 2.5f + 10;     // (the whole world's size: the haze)
+        float nearp = V3WalkNear(v), farp = kWalkDet[v->wDet] * (v->wWorldW[2] > 0 ? v->wWorldW[2] : 250) * 3 + 500;   // the tiles' range (fine depth steps)
+        if (!v->wAreaOn) farp = wfar;
+        if (nearp < 0.02f) nearp = 0.02f;
+        float fy = nearp * 0.62f, fx = fy * w / h;          // ~64 degree vertical field of view (a game's view)
+        glMatrixMode(GL_PROJECTION); glLoadIdentity(); glFrustum(-fx, fx, -fy, fy, nearp, farp);
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+        GLfloat amb[4] = { 0.42f, 0.42f, 0.45f, 1 }, dif[4] = { 0.72f, 0.72f, 0.68f, 1 };
+        glLightfv(GL_LIGHT0, GL_AMBIENT, amb); glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+        glRotatef(v->wpitch, 1, 0, 0); glRotatef(v->wyaw, 0, 1, 0);
+        GLfloat sun[4] = { 0.35f, 0.85f, 0.4f, 0 }; glLightfv(GL_LIGHT0, GL_POSITION, sun);   // fixed in the world: a sun
+        glTranslatef(-(v->wpos[0] - v->drawCentre[0]), -(v->wpos[1] - v->drawCentre[1]), -(v->wpos[2] - v->drawCentre[2]));
+        GLfloat fc[4] = { 0.58f, 0.76f, 0.95f, 1 };          // distance haze into the sky colour
+        glFogi(GL_FOG_MODE, GL_LINEAR); glFogfv(GL_FOG_COLOR, fc); glFogf(GL_FOG_START, wfar * 0.25f); glFogf(GL_FOG_END, wfar * 0.9f); glEnable(GL_FOG);
+        glClear(GL_STENCIL_BUFFER_BIT);                        // the detailed square marks its pixels (1); the backdrop fills the rest
+        glEnable(GL_STENCIL_TEST); glStencilFunc(GL_ALWAYS, 1, 0xFF); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        if (!v->haveMesh) { glDisable(GL_STENCIL_TEST); V3WalkDrawSnaps(v); }
+    } else if (v->haveMesh) {
+        glDisable(GL_FOG);
         float nearp = v->dist * 0.02f, farp = v->dist + v->radius * 4 + 10;
         if (nearp < 0.05f) nearp = 0.05f;
         float fy = nearp * 0.45f, fx = fy * w / h;          // ~48 degree vertical field of view
@@ -3145,6 +3949,8 @@ static void V3Render(V3 *v) {
         glTranslatef(v->panx, v->pany, -v->dist);
         glRotatef(v->pitch, 1, 0, 0);
         glRotatef(v->yaw, 0, 1, 0);
+    }
+    if (v->haveMesh) {
         glEnable(GL_DEPTH_TEST); glEnable(GL_LIGHTING); glEnable(GL_LIGHT0);
         glEnable(GL_COLOR_MATERIAL); glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
         glEnable(GL_NORMALIZE); glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, 1);
@@ -3308,6 +4114,8 @@ static void V3Render(V3 *v) {
         if (v->useVbo) { v->glBindBuffer_(GL_ARRAY_BUFFER_, 0); v->glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER_, 0); }
         glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_NORMAL_ARRAY); glDisableClientState(GL_COLOR_ARRAY);
         glDisable(GL_CLIP_PLANE0);
+        if (v->walk) V3WalkDrawSnaps(v);                     // walking: the previous square and the low-detail world around
+        glDisable(GL_STENCIL_TEST);
         if (v->nprb && v->prbSel > 0 && V3IsTerrainGrid(v)) {   // baked light probes: dots, coloured by the chosen value
             glDisable(GL_LIGHTING); glDisable(GL_TEXTURE_2D); glDisable(GL_BLEND);
             RECT gr; GetClientRect(v->gl, &gr);
@@ -3357,7 +4165,7 @@ static void V3Render(V3 *v) {
             }
             glPointSize(1); glEnable(GL_LIGHTING);
         }
-        if (v->part.terrArea[2] > 0 && V3IsTerrainGrid(v) && v->partOk) V3DrawArrows(v);   // full-detail area: arrows to the next areas
+        if (!v->walk && v->part.terrArea[2] > 0 && V3IsTerrainGrid(v) && v->partOk) V3DrawArrows(v);   // full-detail area: arrows to the next areas
         if (v->part.nl) {                     // cloth links and collision shapes: lines, drawn over the model so they stay visible
             glDisable(GL_LIGHTING); glDisable(GL_DEPTH_TEST); glDisable(GL_TEXTURE_2D);
             glLineWidth(1.5f);
@@ -4314,7 +5122,10 @@ static LRESULT CALLBACK V3TextProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 /* the Controls window (not modal: it can stay open beside the view) */
 static LRESULT CALLBACK V3CtlProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_COMMAND: if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) { DestroyWindow(h); return 0; } break;
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) { DestroyWindow(h); return 0; }
+        if (LOWORD(wp) == 101 && HIWORD(wp) == BN_CLICKED) { V3WalkSetInverted(SendMessageW((HWND)lp, BM_GETCHECK, 0, 0) == BST_CHECKED); return 0; }
+        break;
     case WM_CLOSE: DestroyWindow(h); return 0;
     case WM_DESTROY: { V3 *v = (V3 *)GetWindowLongPtrW(h, GWLP_USERDATA); if (v && v->ctlWnd == h) v->ctlWnd = NULL; return 0; }
     }
@@ -4365,10 +5176,19 @@ static void V3ShowControls(V3 *v) {
         L"\r\nKeys (click the view first)\r\n"
         L"   R or Home\treset the view\r\n"
         L"   T\tlook straight down (top view)\r\n"
+        L"\r\nWalk the world (Mario Kart World's whole map: tick it in the panel)\r\n"
+        L"   Click the view\tcapture the mouse (Esc lets it go)\r\n"
+        L"   Mouse\tlook around\r\n"
+        L"   W A S D\tmove forward, left, back, right\r\n"
+        L"   C\tcollisions on / off (the tick box too)\r\n"
+        L"   Collisions on\twalk with gravity: Space jumps, Ctrl runs\r\n"
+        L"   Space twice\tfly / stop flying (flying down onto the ground lands)\r\n"
+        L"   Flying\tSpace / Shift up / down, Ctrl twice as fast\r\n"
+        L"   Wheel\tslower / faster: 1 x a notch (1 to 100 times, 10 at first)\r\n"
         L"\r\nBelow the Controls button: the place under the cursor. On terrain maps: the\r\n"
         L"game's world coordinates in metres (0 = the middle of the map), the height,\r\n"
         L"and the 125 m square (the X / Z in the light probe file names).";
-    int W = V3S(v, 520), H = V3S(v, 380);
+    int W = V3S(v, 540), H = V3S(v, 420);
     RECT r; GetWindowRect(v->wnd, &r);
     HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, L"AlsarcVox3DControls", L"3D view controls", WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
                              r.left + V3S(v, 40), r.bottom - H - V3S(v, 60), W, H, v->wnd, NULL, GetModuleHandleW(NULL), NULL);
@@ -4404,6 +5224,9 @@ static void V3ShowControls(V3 *v) {
     }
     HWND b = CreateWindowExW(0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP, cr.right - m - V3S(v, 100), cr.bottom - m - V3S(v, 30), V3S(v, 100), V3S(v, 30), h, (HMENU)IDCANCEL, NULL, NULL);
     SendMessageW(b, WM_SETFONT, (WPARAM)v->font, TRUE);
+    HWND inv = CreateWindowExW(0, L"BUTTON", L"Invert mouse up / down when walking", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                               m, cr.bottom - m - V3S(v, 30), cr.right - 3 * m - V3S(v, 100), V3S(v, 30), h, (HMENU)(INT_PTR)101, NULL, NULL);
+    SendMessageW(inv, WM_SETFONT, (WPARAM)v->font, TRUE); SendMessageW(inv, BM_SETCHECK, V3WalkInverted() ? BST_CHECKED : BST_UNCHECKED, 0);
     UiSkinWindow(h);
     v->ctlWnd = h;
 }
@@ -4423,23 +5246,9 @@ static void V3TerrainMenu(V3 *v, int mx, int my) {
         wchar_t mt[200]; swprintf(mt, 200, L"Copy coordinates (%ls)", ct); AppendMenuW(m, MF_STRING, 2, mt);
         AppendMenuW(m, MF_STRING, 3, L"List placed objects near here (200 m)...");
     }
-    if (v->ncinst) {                                     // the collectibles' size (from their lowest point, so they stay on the ground)
-        static const float sizes[] = { 1, 2, 5, 10, 20, 50, 100 };
-        HMENU sm = CreatePopupMenu();
-        for (int i = 0; i < 7; i++) { wchar_t st[40]; swprintf(st, 40, i ? L"%g \x00D7" : L"Real size", sizes[i]);
-            AppendMenuW(sm, MF_STRING | (V3CollS(v) == sizes[i] ? MF_CHECKED : 0) | (v->thread ? MF_GRAYED : 0), 20 + i, st); }
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)sm, L"Collectible size (P-switches, ? panels, medallions)");
-    }
     POINT pt = { mx, my }; ClientToScreen(v->gl, &pt);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, v->wnd, NULL);
     DestroyMenu(m);
-    if (cmd >= 20 && cmd < 27 && !v->thread) {
-        static const float sizes[] = { 1, 2, 5, 10, 20, 50, 100 };
-        v->collScale = sizes[cmd - 20]; V3CollApplyScale(v);
-        for (int k = 0; k < v->ncoll; k++) { char *t3 = strstr(v->coll[k].txt, "\nshown "); if (t3) *t3 = 0;
-            if (V3CollS(v) != 1) { size_t L = strlen(v->coll[k].txt); snprintf(v->coll[k].txt + L, sizeof v->coll[k].txt - L, "\nshown %g x their size", V3CollS(v)); } }
-        V3RequestBuild(v); return;
-    }
     if (cmd == 2 && OpenClipboard(v->wnd)) {
         EmptyClipboard(); size_t n = (wcslen(ct) + 1) * sizeof(wchar_t);
         HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, n); if (g) { memcpy(GlobalLock(g), ct, n); GlobalUnlock(g); SetClipboardData(CF_UNICODETEXT, g); }
@@ -4472,12 +5281,14 @@ static LRESULT CALLBACK V3GLProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE: InvalidateRect(hwnd, NULL, FALSE); return 0;
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
         if (!v) break;
+        if (v->walk) { V3WalkCapture(v); V3WalkInfo(v); return 0; }          // walking: a click captures the mouse
         v->rdown.x = (short)LOWORD(lp); v->rdown.y = (short)HIWORD(lp); v->rmoved = 0; V3ProbeTip(v, -1, 0, 0); V3SoundTip(v, -1, 0, 0);          // (a click: no movement till the button is let go)
         SetFocus(hwnd); SetCapture(hwnd);
         v->dragging = msg == WM_LBUTTONDOWN ? 1 : 2;
         v->last.x = (short)LOWORD(lp); v->last.y = (short)HIWORD(lp);
         return 0;
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
+        if (v && v->walk) return 0;
         if (v) v->dragging = 0;
         ReleaseCapture();
         if (v && msg == WM_RBUTTONUP && !v->rmoved && v->partOk && v->haveMesh && v->part.gridW > 1) V3TerrainMenu(v, (short)LOWORD(lp), (short)HIWORD(lp));
@@ -4487,8 +5298,24 @@ static LRESULT CALLBACK V3GLProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (v && LOWORD(lp) == HTCLIENT && v->arrowHot >= 0) { SetCursor(LoadCursor(NULL, IDC_HAND)); return TRUE; }
         break;
     case WM_MOUSELEAVE: if (v) { v->tracking = 0; V3UpdateCoord(v, 0, 0, 0); if (v->arrowHot >= 0) { v->arrowHot = -1; InvalidateRect(hwnd, NULL, FALSE); } } return 0;
-    case WM_LBUTTONDBLCLK: if (v) { V3ResetView(v); InvalidateRect(hwnd, NULL, FALSE); } return 0;
+    case WM_LBUTTONDBLCLK: if (v && v->walk) return 0; if (v) { V3ResetView(v); InvalidateRect(hwnd, NULL, FALSE); } return 0;
+    case WM_CAPTURECHANGED: if (v && v->walk && v->wCap && (HWND)lp != hwnd) { v->wCap = 0; ClipCursor(NULL); ShowCursor(TRUE); V3WalkInfo(v); } return 0;
+    case WM_KILLFOCUS: if (v && v->walk) { V3WalkRelease(v); V3WalkInfo(v); } return 0;
     case WM_MOUSEMOVE:
+        if (v && v->walk) {                                   // walking: look around (the cursor is kept in the middle)
+            if (!v->wCap) return 0;
+            POINT pt; GetCursorPos(&pt);
+            int dx = pt.x - v->wCentre.x, dy = pt.y - v->wCentre.y;
+            if (!dx && !dy) return 0;
+            v->wyaw += dx * 0.15f; v->wpitch += (V3WalkInverted() ? -dy : dy) * 0.15f;   // (Controls: invert up / down)
+            if (v->wyaw >= 360) v->wyaw -= 360; if (v->wyaw < 0) v->wyaw += 360;
+            if (v->wpitch > 89) v->wpitch = 89; if (v->wpitch < -89) v->wpitch = -89;
+            SetCursorPos(v->wCentre.x, v->wCentre.y);
+            // (the movement timer gets no turn while mouse moves keep coming: a step here too - it goes by the time since the last)
+            if (GetTickCount() - v->wLastT >= 10) V3WalkStep(v);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if (v && v->dragging) {
             int x = (short)LOWORD(lp), y = (short)HIWORD(lp), dx = x - v->last.x, dy = y - v->last.y;
             if (abs(x - v->rdown.x) > 3 || abs(y - v->rdown.y) > 3) v->rmoved = 1;
@@ -4514,6 +5341,12 @@ static LRESULT CALLBACK V3GLProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_MOUSEWHEEL:
+        if (v && v->walk) {                                   // walking: the speed, 1 x a notch (1 x to 100 x)
+            static int acc = 0; acc += (short)HIWORD(wp);
+            int n = acc / 120; acc -= n * 120;
+            V3WalkSetSpeed(v, roundf(v->wSpeedMul) + n);
+            V3WalkInfo(v); return 0;
+        }
         if (v) {
             int d = (short)HIWORD(wp);
             v->dist *= powf(0.88f, d / 120.f);
@@ -4523,6 +5356,17 @@ static LRESULT CALLBACK V3GLProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_KEYDOWN:
+        if (v && v->walk) {
+            if (wp == VK_ESCAPE) { V3WalkRelease(v); V3WalkInfo(v); }
+            else if (wp == 'B') { v->wDbgBack = !v->wDbgBack; InvalidateRect(v->gl, NULL, FALSE); }   // (finding faults: tint the low-detail world red)
+            else if (wp == 'C' && !(lp & 0x40000000)) V3WalkSetColl(v, !v->wColl);
+            else if (wp == VK_SPACE && !(lp & 0x40000000) && v->wColl) {         // Space twice quickly: fly / stop flying
+                DWORD now = GetTickCount();
+                if (v->wLastSpace && now - v->wLastSpace < 300) { v->wFly = !v->wFly; v->wVy = 0; v->wOnGround = 0; v->wLastSpace = 0; V3WalkInfo(v); }
+                else v->wLastSpace = now;
+            }
+            return 0;   // (movement keys: read by the timer)
+        }
         if (v && (wp == 'R' || wp == VK_HOME)) { V3ResetView(v); InvalidateRect(hwnd, NULL, FALSE); }
         if (v && wp == 'T' && v->haveMesh) { V3TopView(v); InvalidateRect(hwnd, NULL, FALSE); }
         return 0;
@@ -4812,12 +5656,25 @@ static void V3SetAll(V3 *v, int show) {
     V3RequestBuild(v);
 }
 // a tick changed in the list (by click or keyboard): an entry, or a whole group
+// a whole group ticked / unticked: remembered by name at once - walking is nearly always loading the next square, and a
+// tick made then (the list's entries already gone) was lost; things in the group follow it in every square loaded after
+static void V3KgSet(V3 *v, const char *g, unsigned char st) {
+    int r = 0; while (r < v->nkg && strcmp(v->kgName[r], g)) r++;
+    if (r == v->nkg) {
+        char (*kn)[VOX_MATN] = (char (*)[VOX_MATN])realloc(v->kgName, (size_t)(v->nkg + 1) * VOX_MATN); if (kn) v->kgName = kn;
+        unsigned char *ks = (unsigned char *)realloc(v->kgState, (size_t)(v->nkg + 1)); if (ks) v->kgState = ks;
+        if (!kn || !ks) return;
+        snprintf(v->kgName[r], VOX_MATN, "%s", g); v->nkg++;
+    }
+    v->kgState[r] = st;
+}
 static void V3ListTicked(V3 *v, int row, int oldState, int newState) {
     if (row < 0 || row >= v->nlist) return;
     int lm = v->listMat[row];
     v->fillingList = 1;
     if (lm < 0) {                                           // a group: from all shown -> hide all; from none / some -> show all
         int g = -1 - lm, show = oldState != 2 || v->grpSome[g]; (void)newState;
+        V3KgSet(v, v->grpName[g], show ? 1 : 2);
         for (int k = 0; k < v->grpN[g]; k++) { int id = v->grpIds[v->grpStart[g] + k]; v->hidden[id] = (unsigned char)!show; if (v->matRow[id] >= 0) ListView_SetCheckState(v->list, v->matRow[id], show); }
         V3SetGroupRow(v, g);
     } else {
@@ -4837,6 +5694,24 @@ static void V3Layout(V3 *v) {
     int infoH = V3S(v, v->nCloth ? 150 : 128);
     MoveWindow(v->info, m, y, pw, infoH, TRUE); y += infoH + gap;
     if (IsWindowVisible(v->lod)) { MoveWindow(v->lod, m, y, pw, rh, TRUE); y += rh + gap; }
+    if (IsWindowVisible(v->walkCb)) { MoveWindow(v->walkCb, m, y, pw, rh, TRUE); y += rh + gap; }
+    if (IsWindowVisible(v->collCb)) { MoveWindow(v->collCb, m, y, pw, rh, TRUE); y += rh + gap; }
+    if (IsWindowVisible(v->wDetSl)) {                     // walking: how far full detail reaches
+        MoveWindow(v->wDetLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->wDetSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
+    if (IsWindowVisible(v->wSpdSl)) {                     // walking: the speed
+        MoveWindow(v->wSpdLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->wSpdSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
+    if (IsWindowVisible(v->wHgtSl)) {                     // walking: the player's height
+        MoveWindow(v->wHgtLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->wHgtSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
+    if (IsWindowVisible(v->wJmpSl)) {                     // walking: the jump's height
+        MoveWindow(v->wJmpLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->wJmpSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
     if (IsWindowVisible(v->ovlCb)) { MoveWindow(v->ovlCb, m, y, pw, V3S(v, 360), TRUE); y += rh + gap; }
     if (IsWindowVisible(v->prbCb)) { MoveWindow(v->prbCb, m, y, pw, V3S(v, 480), TRUE); y += rh + gap; }
     if (IsWindowVisible(v->sndCb)) { MoveWindow(v->sndCb, m, y, pw, V3S(v, 480), TRUE); y += rh + gap; }
@@ -4845,6 +5720,10 @@ static void V3Layout(V3 *v) {
     if ((v->hb.ok && v->part.isModel && v->hasSkeleton) || v->hasCliffs) { MoveWindow(v->hbCb, m, y, pw, rh, TRUE); y += rh + gap; }
     if (v->hasLandmarks) { MoveWindow(v->lmCb, m, y, pw, rh, TRUE); y += rh + gap; }
     if (IsWindowVisible(v->propCb)) { MoveWindow(v->propCb, m, y, pw, rh, TRUE); y += rh + gap; }
+    if (IsWindowVisible(v->csl)) {                        // the collectibles' size
+        MoveWindow(v->cslbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->csl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
     if (v->part.isModel && v->hasSkeleton) {                 // models: animation file and list, Play and the frame slider instead of the cut
         if (v->nAtt) { MoveWindow(v->attachCb, m, y, pw, rh, TRUE); y += rh + gap; }
         MoveWindow(v->keepCb, m, y, pw, rh, TRUE); y += rh + gap;
@@ -4855,10 +5734,11 @@ static void V3Layout(V3 *v) {
         MoveWindow(v->play, m, y, pb, rh, TRUE); MoveWindow(v->speedCb, m + pb + gap, y, sb, V3S(v, 200), TRUE);
         MoveWindow(v->frame, m + pb + sb + 2 * gap, y, pw - pb - sb - 2 * gap, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
         if (v->ncol) { MoveWindow(v->colCb, m, y, pw, V3S(v, 400), TRUE); y += rh + gap; }
-    } else {
+    } else if (!v->walk) {
+        ShowWindow(v->cutlbl, SW_SHOW); ShowWindow(v->cut, SW_SHOW);
         MoveWindow(v->cutlbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
         MoveWindow(v->cut, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
-    }
+    } else { ShowWindow(v->cutlbl, SW_HIDE); ShowWindow(v->cut, SW_HIDE); }   // (walking: no ground layers, no cut)
     {   int bw4 = (pw - 3 * gap) / 4;                     // Controls (a little wider) | Reset | Top | Save
         MoveWindow(v->ctlBtn, m, y, bw4 + V3S(v, 8), rh + V3S(v, 2), TRUE);
         int x2 = m + bw4 + V3S(v, 8) + gap, bw3 = (pw - (x2 - m) - 2 * gap) / 3;
@@ -4978,7 +5858,7 @@ static void V3RestorePass(V3 *v) {
     int cut; if (V3SavedInt(t, "cut", &cut) && cut != v->cutPos && cut >= 0 && cut <= 1000) { v->cutPos = cut; SendMessageW(v->cut, TBM_SETPOS, TRUE, cut); V3UpdateCutLabel(v); }
     int hc = 0;
     {   const char *q = strstr(t, "\ncsize "); float cs;            // the collectibles' size
-        if (q && sscanf(q + 7, "%f", &cs) == 1 && cs >= 1 && cs <= 100 && cs != V3CollS(v) && v->ncinst) { v->collScale = cs; V3CollApplyScale(v); hc = 1; } }
+        if (q && sscanf(q + 7, "%f", &cs) == 1 && cs >= 1 && cs <= 100 && cs != V3CollS(v) && v->ncinst) { v->collScale = cs; V3CollApplyScale(v); V3CollTexts(v); V3CollSliderSync(v); hc = 1; } }
     for (const char *q = strstr(t, "\nhide "); q; q = strstr(q + 1, "\nhide ")) {
         int hid = q[6] == '1'; const char *nm = q + 8; const char *e = strchr(nm, '\n'); size_t L = e ? (size_t)(e - nm) : strlen(nm);
         for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++)
@@ -5065,6 +5945,11 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessageW(v->cut, TBM_SETPAGESIZE, 0, 50);
         SendMessageW(v->cut, TBM_SETPOS, TRUE, 1000);
         v->cutPos = 1000;
+        v->cslbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_CSIZELBL);
+        v->csl   = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 0, V3_CSIZE);
+        SendMessageW(v->csl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 200));
+        SendMessageW(v->csl, TBM_SETLINESIZE, 0, 1); SendMessageW(v->csl, TBM_SETPAGESIZE, 0, 10);
+        ShowWindow(v->cslbl, SW_HIDE); ShowWindow(v->csl, SW_HIDE);
         v->attachCb = V3Ctl(v, L"BUTTON", L"Head and tie attached", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_ATTACH);
         ShowWindow(v->attachCb, SW_HIDE);
         v->keepCb = V3Ctl(v, L"BUTTON", L"Keep in place (ignore the Root bone's travel)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_KEEP);
@@ -5076,6 +5961,26 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         v->lmCb = V3Ctl(v, L"BUTTON", L"Show landmarks (mountains, cranes, gates...)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_LANDMARKS);
         ShowWindow(v->lmCb, SW_HIDE); SendMessageW(v->lmCb, BM_SETCHECK, BST_CHECKED, 0);
         v->propCb = V3Ctl(v, L"BUTTON", L"Show props (coins, item boxes, lights, cars, signs...)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_PROPS);
+        v->walkCb = V3Ctl(v, L"BUTTON", L"Walk the world (first person: click the view, WASD, Esc)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_WALK);
+        ShowWindow(v->walkCb, SW_HIDE); v->wSpeedMul = 10; v->wDet = 2;
+        v->collCb = V3Ctl(v, L"BUTTON", L"Collisions (C): walk with gravity, Space twice = fly", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_WCOLL);
+        ShowWindow(v->collCb, SW_HIDE);
+        v->wDetLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WDETLBL);
+        v->wDetSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WDET);
+        SendMessageW(v->wDetSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 10)); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, 2);
+        ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE);
+        v->wHgtLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WHGTLBL);
+        v->wHgtSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WHGT);
+        SendMessageW(v->wHgtSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 18)); SendMessageW(v->wHgtSl, TBM_SETPOS, TRUE, 5); v->wHeight = 3.5f;
+        ShowWindow(v->wHgtLbl, SW_HIDE); ShowWindow(v->wHgtSl, SW_HIDE);
+        v->wJmpLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WJMPLBL);
+        v->wJmpSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WJMP);
+        SendMessageW(v->wJmpSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 19)); SendMessageW(v->wJmpSl, TBM_SETPOS, TRUE, 2); v->wJump = 0.75f;
+        ShowWindow(v->wJmpLbl, SW_HIDE); ShowWindow(v->wJmpSl, SW_HIDE);
+        v->wSpdLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WSPDLBL);
+        v->wSpdSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | WS_TABSTOP, 0, V3_WSPD);
+        SendMessageW(v->wSpdSl, TBM_SETRANGE, TRUE, MAKELPARAM(1, 100)); SendMessageW(v->wSpdSl, TBM_SETPOS, TRUE, 10);
+        ShowWindow(v->wSpdLbl, SW_HIDE); ShowWindow(v->wSpdSl, SW_HIDE);
         ShowWindow(v->propCb, SW_HIDE);
         v->simCb = V3Ctl(v, L"BUTTON", L"Simulate cloth while playing (tie and hair swing)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_CLOTHSIM);
         ShowWindow(v->simCb, SW_HIDE); SendMessageW(v->simCb, BM_SETCHECK, BST_CHECKED, 0); v->simReset = 1;
@@ -5201,6 +6106,12 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 swprintf(v->status, 256, L"Building the surface... %ld%%", v->progress / 10);
                 V3UpdateInfo(v);
             }
+        } else if (wp == V3_TIMER_WALK && v) {
+            if (v->walk) V3WalkStep(v); else KillTimer(hwnd, V3_TIMER_WALK);
+        } else if (wp == V3_TIMER_CSIZE && v) {         // the size slider moved: resize once no build is running
+            if (v->thread) return 0;                         // (the timer comes back)
+            KillTimer(hwnd, V3_TIMER_CSIZE);
+            if (v->ncinst && v->collWant >= 1 && v->collWant != V3CollS(v)) { v->collScale = v->collWant; V3CollApplyScale(v); V3CollTexts(v); V3RequestBuild(v); }
         } else if (wp == V3_TIMER_REBUILD) { KillTimer(hwnd, V3_TIMER_REBUILD); if (v->nAtt && V3UpdateTieNeck(v)) V3FillList(v); V3RequestBuild(v); }
         else if (wp == V3_TIMER_FX && v->fxOn) { if (!(v->animSel > 0 && v->playing)) InvalidateRect(v->gl, NULL, FALSE); }
         else if (wp == V3_TIMER_ANIM && v->animSel > 0 && v->playing) {
@@ -5221,18 +6132,24 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         v->partOk = 1;
         if (v->terrTex || v->nmtex) V3UploadTextures(v);
-        ShowWindow(v->ovlCb, V3IsTerrainGrid(v) && !v->part.terrGeneric ? SW_SHOW : SW_HIDE); SendMessageW(v->ovlCb, CB_SETCURSEL, v->ovlSel, 0);   // (Mario Kart World's layers only)
+        ShowWindow(v->ovlCb, V3IsTerrainGrid(v) && !v->part.terrGeneric && !v->walk ? SW_SHOW : SW_HIDE); SendMessageW(v->ovlCb, CB_SETCURSEL, v->ovlSel, 0);   // (Mario Kart World's layers only)
+        ShowWindow(v->walkCb, !wcscmp(v->geom, L"terrainworld") || v->walk ? SW_SHOW : SW_HIDE);       // walking: from the whole world
         v->prbHot = -1; v->sndHot = -1; if (v->prbTip) { TOOLINFOW ti0; ZeroMemory(&ti0, sizeof ti0); ti0.cbSize = sizeof ti0; ti0.hwnd = v->gl; ti0.uId = 1; SendMessageW(v->prbTip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti0); }
         free(v->snd); v->snd = v->sndLoad; v->nsnd = v->nsndLoad; v->sndOrient = v->sndOrientLoad; v->sndLoad = NULL; v->nsndLoad = 0;
         ShowWindow(v->sndCb, V3IsTerrainGrid(v) && v->nsnd ? SW_SHOW : SW_HIDE); SendMessageW(v->sndCb, CB_SETCURSEL, v->sndSel, 0); V3SoundRange(v);
         free(v->prb); v->prb = v->prbLoad; v->nprb = v->nprbLoad; v->nprbFine = v->nprbFineLoad; v->prbLoad = NULL; v->nprbLoad = 0; v->nprbFineLoad = 0; memcpy(v->prbFile, v->prbFileLoad, sizeof v->prbFile);
-        ShowWindow(v->prbCb, V3IsTerrainGrid(v) && v->nprb ? SW_SHOW : SW_HIDE); SendMessageW(v->prbCb, CB_SETCURSEL, v->prbSel, 0); V3ProbeRange(v); V3Layout(v);
+        ShowWindow(v->prbCb, V3IsTerrainGrid(v) && v->nprb ? SW_SHOW : SW_HIDE); SendMessageW(v->prbCb, CB_SETCURSEL, v->prbSel, 0); V3ProbeRange(v);
+        ShowWindow(v->cslbl, v->ncinst ? SW_SHOW : SW_HIDE); ShowWindow(v->csl, v->ncinst ? SW_SHOW : SW_HIDE); V3CollSliderSync(v); V3Layout(v);
         v->hasWater = v->hasCliffs = v->hasLandmarks = 0;           // terrain: every kind of thing is its own entry in the list (no tick boxes)
         if (V3IsTerrainGrid(v)) {
             ShowWindow(v->clothCb, SW_HIDE); ShowWindow(v->hbCb, SW_HIDE); ShowWindow(v->lmCb, SW_HIDE); ShowWindow(v->propCb, SW_HIDE);
             for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++) {
                 v->hidden[k] = v->part.startHidden[k];
                 for (int q = 0; q < v->nkeep; q++) if (!strcmp(v->keepName[q], v->part.matName[k])) { v->hidden[k] = v->keepHidden[q]; break; }   // as it was before reloading
+                if (v->kgName) {                                   // a whole group ticked / unticked: everything in it follows (also things met before)
+                    char g[VOX_MATN]; V3MatCat(v, k, g);
+                    for (int q = 0; q < v->nkg; q++) if (!strcmp(v->kgName[q], g)) { if (v->kgState[q] == 1) v->hidden[k] = 0; else if (v->kgState[q] == 2) v->hidden[k] = 1; break; }
+                }
             }
             V3Layout(v);
         }
@@ -5276,7 +6193,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         if (v->part.err[0]) swprintf(v->status, 256, L"Warning: %hs", v->part.err);
-        V3RequestBuild(v);
+        v->wLoadBuild = 1; V3RequestBuild(v); v->wLoadBuild = 0;
         V3UpdateInfo(v);
         return 0;
     case WM_V3_MESHED: {
@@ -5299,6 +6216,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (m) {
             V3Upload(v, m);
             VoxFreeMesh(m); free(m);
+            if (v->walk && v->wTileLoading) { V3WalkTileArrived(v); V3WalkPump(v); V3WalkInfo(v); }   // walking: the mesh becomes a tile; on to the next
             if (v->animSel > 0) V3ApplyPose(v);
             swprintf(v->status, 256, v->useVbo ? L"" : L"(Using basic OpenGL - rotating may be slow.)");
             if (v->part.gridW > 1 && v->part.terrWorld[2] > 0 && v->useVbo) swprintf(v->status, 256, L"Right-click the ground to open that area in full detail.");
@@ -5346,6 +6264,34 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             V3ApplyPose(v); V3UpdateFrameLabel(v); InvalidateRect(v->gl, NULL, FALSE);
             return 0;
         }
+        if ((HWND)lp == v->wSpdSl) {                       // walking: the speed
+            V3WalkSetSpeed(v, (float)SendMessageW(v->wSpdSl, TBM_GETPOS, 0, 0)); return 0;
+        }
+        if ((HWND)lp == v->wJmpSl) {                       // walking: the jump's height
+            int pos = (int)SendMessageW(v->wJmpSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > 19) pos = 19;
+            V3WalkSetJump(v, (pos + 1) * 0.25f); return 0;
+        }
+        if ((HWND)lp == v->wHgtSl) {                       // walking: the player's height (at once)
+            int pos = (int)SendMessageW(v->wHgtSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > 18) pos = 18;
+            V3WalkSetHeight(v, 1 + pos * 0.5f); V3WalkInfo(v); InvalidateRect(v->gl, NULL, FALSE); return 0;
+        }
+        if ((HWND)lp == v->wDetSl) {                       // walking: the full-detail square's size (applied when the slider stops)
+            int pos = (int)SendMessageW(v->wDetSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > 10) pos = 10;
+            int old = v->wDet; v->wDet = pos; V3WalkDetLabel(v);
+            if (LOWORD(wp) != TB_THUMBTRACK && pos != old && v->walk) {      // another tile size: all tiles again
+                V3WalkTilesFree(v); if (v->haveMesh) V3FreeGLMesh(v);
+                if (v->thread) { v->cancel = 1; v->reloadPending = 0; v->wTileLoading = 0; } else V3WalkPump(v);
+            }
+            if (LOWORD(wp) == TB_THUMBTRACK) v->wDet = old;
+            SetFocus(v->gl);
+            return 0;
+        }
+        if ((HWND)lp == v->csl) {                          // the collectibles' size: the label follows at once, the view
+            float s = V3CollFromPos((int)SendMessageW(v->csl, TBM_GETPOS, 0, 0));   // a moment after the slider stops
+            V3CollLabel(v, s); v->collWant = s;
+            SetTimer(hwnd, V3_TIMER_CSIZE, LOWORD(wp) == TB_THUMBTRACK ? 250 : 60, NULL);
+            return 0;
+        }
         if ((HWND)lp == v->cut) {
             v->cutPos = (int)SendMessageW(v->cut, TBM_GETPOS, 0, 0);
             V3UpdateCutLabel(v);
@@ -5369,6 +6315,10 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             V3UpdateInfo(v); SetFocus(v->gl); break;
         case V3_TOPVIEW: if (v->haveMesh) { V3TopView(v); InvalidateRect(v->gl, NULL, FALSE); } SetFocus(v->gl); break;
         case V3_PNG: V3SavePng(v); break;
+        case V3_WALK:
+            if (SendMessageW(v->walkCb, BM_GETCHECK, 0, 0) == BST_CHECKED) V3WalkStart(v); else V3WalkStop(v);
+            break;
+        case V3_WCOLL: V3WalkSetColl(v, SendMessageW(v->collCb, BM_GETCHECK, 0, 0) == BST_CHECKED); SetFocus(v->gl); break;
         case V3_PROPS: {                                 // loaded only when wanted (thousands of small objects): reload the area
             int on = SendMessageW(v->propCb, BM_GETCHECK, 0, 0) == BST_CHECKED;
             if (on != v->propsOn) { v->propsOn = on; V3ReloadWorld(v); }
@@ -5504,7 +6454,8 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE: if (v && !V3AskSaveOnClose(v)) return 0; DestroyWindow(hwnd); return 0;
     case WM_DESTROY:
         // stop the worker and timers now; free everything in WM_NCDESTROY, after the child controls are gone
-        KillTimer(hwnd, V3_TIMER_PROGRESS); KillTimer(hwnd, V3_TIMER_REBUILD); KillTimer(hwnd, V3_TIMER_ANIM);
+        KillTimer(hwnd, V3_TIMER_PROGRESS); KillTimer(hwnd, V3_TIMER_REBUILD); KillTimer(hwnd, V3_TIMER_ANIM); KillTimer(hwnd, V3_TIMER_CSIZE); KillTimer(hwnd, V3_TIMER_WALK); if (v->wCap) { ClipCursor(NULL); ShowCursor(TRUE); v->wCap = 0; }
+        V3WalkTilesFree(v); V3SnapFree(v, &v->wBack); free(v->wGrid); v->wGrid = NULL;
         if (v->thread) { v->cancel = 1; WaitForSingleObject(v->thread, 15000); CloseHandle(v->thread); v->thread = NULL; }
         if (v->exportThread) { v->cancel = 1; WaitForSingleObject(v->exportThread, 60000); CloseHandle(v->exportThread); v->exportThread = NULL; }
         // GL: the drawing area still exists at this point (children are destroyed after this message)
@@ -5522,7 +6473,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         while (PeekMessageW(&mm, hwnd, WM_V3_EXPORTED, WM_V3_EXPORTED, PM_REMOVE)) free((void *)mm.lParam);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         free(v->cpuVert); free(v->cpuIdx); free(v->runs);
-        free(v->keepName); free(v->keepHidden); free(v->allAct); free(v->names); free(v->restoreTxt); free(v->expName); free(v->actArc); free(v->miArc); free(v->genArc); free(v->wta); free(v->isl); free(v->cpt); free(v->actColl); free(v->cinst); free(v->corig); free(v->stkPx); if (v->stkWnd) DestroyWindow(v->stkWnd); free(v->stk); MsbtFree(&v->missMsg); for (int k = 0; k < VOX_MAXMAT; k++) free(v->pieceTxt[k]); free(v->prb); free(v->prbLoad); free(v->snd); free(v->sndLoad); free(v->meshSrc); free(v->animBuf); free(v->skinM); free(v->worldM); free(v->morphP); BfShapeAnimFree(&v->shAnim); BfVisAnimFree(&v->visAnim); BfMatAnimFree(&v->matAnim); for (int a = 0; a < v->nAtt; a++) { BfShapeAnimFree(&v->att[a].sh); BfVisAnimFree(&v->att[a].vis); BfMatAnimFree(&v->att[a].mat); } free(v->posedP); free(v->posedN);
+        free(v->keepName); free(v->keepHidden); free(v->kgName); free(v->kgState); free(v->allAct); free(v->names); free(v->restoreTxt); free(v->expName); free(v->actArc); free(v->miArc); free(v->genArc); free(v->wta); free(v->isl); free(v->cpt); free(v->actColl); free(v->cinst); free(v->corig); free(v->stkPx); if (v->stkWnd) DestroyWindow(v->stkWnd); free(v->stk); MsbtFree(&v->missMsg); for (int k = 0; k < VOX_MAXMAT; k++) free(v->pieceTxt[k]); free(v->prb); free(v->prbLoad); free(v->snd); free(v->sndLoad); free(v->meshSrc); free(v->animBuf); free(v->skinM); free(v->worldM); free(v->morphP); BfShapeAnimFree(&v->shAnim); BfVisAnimFree(&v->visAnim); BfMatAnimFree(&v->matAnim); for (int a = 0; a < v->nAtt; a++) { BfShapeAnimFree(&v->att[a].sh); BfVisAnimFree(&v->att[a].vis); BfMatAnimFree(&v->att[a].mat); } free(v->posedP); free(v->posedN);
         BfSkelAnimFree(&v->anim); BfAnimFileFree(&v->anims); for (int c = 0; c < v->nsim; c++) ClothSimFree(&v->sim[c]); HbFree(&v->hb); free(v->patOn); free(v->patRGB); if (v->fxOn) BfColAnimFree(&v->fx); for (int k = 0; k < v->ncolF; k++) BfAnimFileFree(&v->colF[k]);
         for (int a = 0; a < v->nAtt; a++) BfSkelAnimFree(&v->att[a].anim);
         for (int i = 0; i < v->nAttFile; i++) BfAnimFileFree(&v->attFile[i]);

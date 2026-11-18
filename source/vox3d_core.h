@@ -1809,16 +1809,18 @@ static int PhMeshAt(const HkFile *h, int rti, size_t base, const float *X, PhSou
 }
 // convex hull (hknpBoxShape / convex polytope): vertices + faces as index fans, tag 0
 static int PhHullAt(const HkFile *h, int rti, size_t base, const float *X, PhSoup *S) {
-    const unsigned char *b = h->b; size_t n = h->n; int ho;
-    if (!HkMember(h, rti, "hull", &ho, NULL) || base + ho + 32 > n) return 0;
+    const unsigned char *b = h->b; size_t n = h->n; int ho, ht = 0;
+    if (!HkMember(h, rti, "hull", &ho, &ht) || base + ho + 32 > n) return 0;
+    // vertex size: hkVector4 (16); Havok 2025 (Switch Sports...) stores hkFloat3 (12)
+    size_t vs = 16; { int vo, vt = 0; if (ht > 0 && ht < h->nt && HkMember(h, ht, "vertices", &vo, &vt) && vt > 0 && vt < h->nt) { int st = h->T[vt].subtype; if (st > 0 && st < h->nt && HkSize(h, st) == 12) vs = 12; } }
     size_t A[4]; uint32_t C[4];
     for (int k = 0; k < 4; k++) { size_t f = base + ho + k * 8; A[k] = f + (int32_t)VoxRd32(b + f); C[k] = VoxRd32(b + f + 4); }
-    if (A[0] + (size_t)C[0] * 16 > n || A[2] + (size_t)C[2] * 4 > n || A[3] + C[3] > n || C[0] > 4096) return 0;
+    if (A[0] + (size_t)C[0] * vs > n || A[2] + (size_t)C[2] * 4 > n || A[3] + C[3] > n || C[0] > 4096) return 0;
     size_t nt = 0;
     for (uint32_t f = 0; f < C[2]; f++) { unsigned num = b[A[2] + f * 4 + 2]; if (num >= 3) nt += num - 2; }
     if (!PhGrow(S, C[0], nt)) return -1;
     size_t v0 = S->nv;
-    for (uint32_t i = 0; i < C[0]; i++) PhPut(S, X, BfFloat_(b + A[0] + i * 16), BfFloat_(b + A[0] + i * 16 + 4), BfFloat_(b + A[0] + i * 16 + 8));
+    for (uint32_t i = 0; i < C[0]; i++) PhPut(S, X, BfFloat_(b + A[0] + i * vs), BfFloat_(b + A[0] + i * vs + 4), BfFloat_(b + A[0] + i * vs + 8));
     for (uint32_t f = 0; f < C[2]; f++) {
         unsigned first = b[A[2] + f * 4] | (b[A[2] + f * 4 + 1] << 8), num = b[A[2] + f * 4 + 2];
         if (first + num > C[3]) continue;
@@ -2418,7 +2420,8 @@ static int VoxBuildTriMesh(const VoxPart *p, VoxMesh *m, const unsigned char *hi
             for (size_t t = (G1 - 1) * (G1 - 1) * 2; t < p->nti; t++) {
                 unsigned mat = p->tmat[t]; const char *nm = mat < (unsigned)p->nmat ? p->matName[mat] : "";
                 unsigned char rgb[3] = { 40, 110, 190 };                                         // water
-                if (!strncmp(nm, "Muddy", 5)) { rgb[0] = 105; rgb[1] = 85; rgb[2] = 55; }
+                if (strstr(nm, "WaterSurface")) { }                                                  // the game's water surface models: water
+                else if (!strncmp(nm, "Muddy", 5)) { rgb[0] = 105; rgb[1] = 85; rgb[2] = 55; }
                 else if (!strncmp(nm, "Lava", 4)) { rgb[0] = 240; rgb[1] = 90; rgb[2] = 25; }
                 else if (!strncmp(nm, "Ghost", 5)) { rgb[0] = 95; rgb[1] = 70; rgb[2] = 120; }
                 else if (!strncmp(nm, "Chocolate", 9)) { rgb[0] = 95; rgb[1] = 55; rgb[2] = 30; }

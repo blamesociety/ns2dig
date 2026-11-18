@@ -1,4 +1,4 @@
-/* BFEVFL event flows (version 0.3): flowcharts (actors, events, entry points) and timelines. Portable C.
+/* BFEVFL event flows (versions 0.3 and 4.0): flowcharts (actors, events, entry points) and timelines. Portable C.
    Layout as in alsarc_dump.py's read_bfevfl. */
 #ifndef EVFL_CORE_H
 #define EVFL_CORE_H
@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 
-enum { EV_ACTION = 0, EV_SWITCH, EV_FORK, EV_JOIN, EV_SUBFLOW };
+enum { EV_ACTION = 0, EV_SWITCH, EV_FORK, EV_JOIN, EV_SUBFLOW, EV_SUBSWITCH, EV_RETURN };   // 5, 6: version 4 only
 typedef struct { char key[64]; int type; char *str; double num; } EvParam;   // flattened: nested keys joined with '.'
 typedef struct { EvParam *p; int n, cap; } EvParams;
 typedef struct { char name[64]; char **acts; int nact; char **qs; int nq; } EvActor;
@@ -17,6 +17,7 @@ typedef struct {
     int ncase; int *caseVal, *caseEv;
     int nbr; int *br; int join;
     char sfFlow[128], sfEntry[128];
+    uint32_t ret;                     // EV_RETURN: the value returned (a hash, see EvValName)
     EvParams prm;
 } EvEvent;
 typedef struct { char name[96]; int main; } EvEntry;
@@ -25,12 +26,21 @@ typedef struct { float start, dur; int actor, action; EvParams prm; } EvClip;
 typedef struct { char name[128]; float dur; EvActor *actors; int nactors; EvClip *clips; int nclips; EvClip *os; int nos; } EvTl;
 typedef struct { char name[128]; EvFlow *fc; int nfc; EvTl *tl; int ntl; char err[200]; } EvFile;
 
-static const unsigned char *EvB; static size_t EvN;
+static const unsigned char *EvB; static size_t EvN; static size_t EvEvSize = 0x28;   // 0x30 in version 4
 static unsigned EvU8(size_t o) { return o < EvN ? EvB[o] : 0; }
 static unsigned EvU16(size_t o) { return o + 2 <= EvN ? (unsigned)(EvB[o] | (EvB[o + 1] << 8)) : 0; }
 static uint32_t EvU32(size_t o) { return o + 4 <= EvN ? (uint32_t)(EvB[o] | (EvB[o + 1] << 8) | (EvB[o + 2] << 16) | ((uint32_t)EvB[o + 3] << 24)) : 0; }
 static uint64_t EvU64(size_t o) { return o + 8 <= EvN ? (uint64_t)EvU32(o) | ((uint64_t)EvU32(o + 4) << 32) : 0; }
 static float EvF32(size_t o) { uint32_t x = EvU32(o); float f; memcpy(&f, &x, 4); return f; }
+// version 4 sub-flows return a value as the FNV-1a hash of its text: "1" / "0" for yes / no, other numbers, true / false
+static uint32_t EvFnv(const char *t) { uint32_t h = 0x811C9DC5u; while (*t) { h ^= (unsigned char)*t++; h *= 0x01000193u; } return h; }
+static void EvValName(uint32_t h, char *out, size_t n) {
+    static const char *w[] = { "true", "false", "True", "False", "None" };
+    char t[16];
+    for (int i = -16; i < 256; i++) { snprintf(t, sizeof t, "%d", i); if (EvFnv(t) == h) { snprintf(out, n, "%s", t); return; } }
+    for (int i = 0; i < 5; i++) if (EvFnv(w[i]) == h) { snprintf(out, n, "%s", w[i]); return; }
+    snprintf(out, n, "0x%08X", (unsigned)h);
+}
 // a length-prefixed string
 static void EvStr(uint64_t o, char *out, size_t n) {
     out[0] = 0; if (!o || o + 2 > EvN) return;
@@ -106,7 +116,7 @@ static int EvFlowRead(size_t o, EvFlow *f) {
     if (!f->actors || !f->ev || !f->ent) return 0;
     for (int i = 0; i < nact; i++) EvActorRead((size_t)EvU64(o + 0x28) + 0x38 * (size_t)i, &f->actors[f->nactors++]);
     for (int i = 0; i < nev; i++) {
-        size_t e = (size_t)EvU64(o + 0x30) + 0x28 * (size_t)i; EvEvent *v = &f->ev[f->nev++];
+        size_t e = (size_t)EvU64(o + 0x30) + EvEvSize * (size_t)i; EvEvent *v = &f->ev[f->nev++];
         EvStr(EvU64(e), v->name, sizeof v->name);
         v->type = (int)EvU8(e + 8); v->next = -1; v->join = -1;
         unsigned a = EvU16(e + 0xA), b = EvU16(e + 0xC), c = EvU16(e + 0xE);
@@ -125,7 +135,14 @@ static int EvFlowRead(size_t o, EvFlow *f) {
         else if (v->type == EV_SUBFLOW) {
             v->next = a == 0xFFFF ? -1 : (int)a; EvContainer(EvU64(e + 0x10), "", &v->prm, 0);
             EvStr(EvU64(e + 0x18), v->sfFlow, sizeof v->sfFlow); EvStr(EvU64(e + 0x20), v->sfEntry, sizeof v->sfEntry);
-        }
+        } else if (v->type == EV_SUBSWITCH) {     // run a sub-flow, then branch on the value it returns
+            EvContainer(EvU64(e + 0x10), "", &v->prm, 0);
+            EvStr(EvU64(e + 0x20), v->sfFlow, sizeof v->sfFlow); EvStr(EvU64(e + 0x28), v->sfEntry, sizeof v->sfEntry);
+            v->ncase = (int)a; if (v->ncase > 64) v->ncase = 64;
+            v->caseVal = (int *)calloc(v->ncase + 1, sizeof(int)); v->caseEv = (int *)calloc(v->ncase + 1, sizeof(int));
+            size_t cs = (size_t)EvU64(e + 0x18);
+            for (int j = 0; j < v->ncase && v->caseVal && v->caseEv; j++) { v->caseVal[j] = (int)EvU32(cs + 8 * (size_t)j); v->caseEv[j] = (int)EvU16(cs + 8 * (size_t)j + 4); }
+        } else if (v->type == EV_RETURN) v->ret = EvU32(e + 0xC);
     }
     static char names[512][96]; int nn = EvDic(EvU64(o + 0x38), names, 512);
     for (int i = 0; i < nent; i++) {
@@ -173,6 +190,7 @@ static int EvParse(const unsigned char *b, size_t n, EvFile *f) {
     if (n < 0x48 || memcmp(b, "BFEVFL\0\0", 8)) { snprintf(f->err, sizeof f->err, "Not a BFEVFL event flow."); return 0; }
     size_t no = EvU32(0x10); size_t i = 0; while (no + i < n && b[no + i] && i < sizeof f->name - 1) { f->name[i] = (char)b[no + i]; i++; }
     int nfc = (int)EvU16(0x20), ntl = (int)EvU16(0x22);
+    EvEvSize = b[9] >= 4 ? 0x30 : 0x28;
     f->fc = (EvFlow *)calloc(nfc + 1, sizeof(EvFlow)); f->tl = (EvTl *)calloc(ntl + 1, sizeof(EvTl));
     if (!f->fc || !f->tl) return 0;
     for (int k = 0; k < nfc; k++) if (EvFlowRead((size_t)EvU64((size_t)EvU64(0x28) + 8 * (size_t)k), &f->fc[f->nfc])) f->nfc++;

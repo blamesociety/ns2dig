@@ -17,9 +17,13 @@ static uint32_t FcBe32(const unsigned char *p) { return ((uint32_t)p[0] << 24) |
 static unsigned FcBe16(const unsigned char *p) { return (p[0] << 8) | p[1]; }
 static float FcRdF(const unsigned char *p) { uint32_t u = FcRd32(p); float f; memcpy(&f, &u, 4); return f; }
 
-/* ---- .bfotf / .bfttf: returns a malloc'd plain OTF/TTF, or NULL ---- */
+/* ---- .bfotf / .bfttf (and plain .otf / .ttf): returns a malloc'd plain OTF/TTF, or NULL ---- */
 static unsigned char *FontUnscramble(const unsigned char *b, size_t n, size_t *outN) {
     if (n < 16) return NULL;
+    if (!memcmp(b, "OTTO", 4) || !memcmp(b, "\0\1\0\0", 4) || !memcmp(b, "true", 4)) {   // a plain font (Switch Sports' scft\X.otf): as it is
+        unsigned nt = FcBe16(b + 4);
+        if (nt && nt <= 64 && 12 + (size_t)nt * 16 <= n) { unsigned char *o = (unsigned char *)malloc(n); if (!o) return NULL; memcpy(o, b, n); *outN = n; return o; }
+    }
     /* The key: the header's first word is the magic 7F 9A 02 18 XORed with it; or the data starts with a font
        signature ("OTTO" CFF OpenType, 00 01 00 00 / "true" TrueType, "ttcf" collection) */
     static const unsigned char sig[5][4] = { { 0x7F, 0x9A, 0x02, 0x18 }, { 'O', 'T', 'T', 'O' }, { 0, 1, 0, 0 }, { 't', 'r', 'u', 'e' }, { 't', 't', 'c', 'f' } };

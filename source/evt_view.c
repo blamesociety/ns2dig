@@ -302,6 +302,21 @@ static void EvWalk(EV *v, const EvFlow *F, int i, int ind, int stop, int branch,
             else swprintf(t, 4096, L"%hs   run \"%hs\" from %hs.bfevfl\r\n", e->name, e->sfEntry, e->sfFlow);
             EvApp(v, t, ST_FLOW);
             i = e->next;
+        } else if (e->type == EV_SUBSWITCH) {
+            EvIndent(v, ind);
+            if (!e->sfFlow[0]) swprintf(t, 4096, L"%hs   run \"%hs\" (in this file)%ls%ls%ls  \x2192 depends on its result\r\n", e->name, e->sfEntry, pt[0] ? L" (" : L"", pt, pt[0] ? L")" : L"");
+            else swprintf(t, 4096, L"%hs   run \"%hs\" from %hs.bfevfl%ls%ls%ls  \x2192 depends on its result\r\n", e->name, e->sfEntry, e->sfFlow, pt[0] ? L" (" : L"", pt, pt[0] ? L")" : L"");
+            EvApp(v, t, ST_FLOW);
+            for (int k = 0; k < e->ncase; k++) {
+                char vn[24]; EvValName((uint32_t)e->caseVal[k], vn, sizeof vn);
+                EvIndent(v, ind + 1); swprintf(t, 4096, L"result %hs:\r\n", vn); EvApp(v, t, ST_FLOW);
+                EvWalk(v, F, e->caseEv[k], ind + 2, -1, 0, depth + 1);
+            }
+            return;
+        } else if (e->type == EV_RETURN) {
+            char vn[24]; EvValName(e->ret, vn, sizeof vn);
+            EvIndent(v, ind); swprintf(t, 4096, L"%hs   return %hs\r\n", e->name, vn); EvApp(v, t, ST_FLOW);
+            return;
         } else { EvIndent(v, ind); swprintf(t, 4096, L"%hs   (unknown step type %d)\r\n", e->name, e->type); EvApp(v, t, ST_NOTE); return; }
     }
     if (i < 0 && !branch) { EvIndent(v, ind); EvApp(v, L"end\r\n", ST_NOTE); }

@@ -11,6 +11,9 @@ SETUP (once)
   2. Python 3.14 or newer: nothing else to install (zstd support is built in).
      Python 3.13 or older: in a command prompt run  pip install zstandard
   3. Keep ns2dig.exe and ns2dig.py in the same folder.
+  4. Optional, for newer games (e.g. Nintendo Switch Sports Resort): their exefs\main is compressed with
+     ZBIC. To decode it, run  pip install zbic  (a separate open-source package, not part of ns2dig).
+     Without it, main.json only has the file's header and a note.
 
 UPGRADING FROM "NS2DIGGER" (or "ALSARC DUMP")
   Unzip into your existing ns2digger folder, then delete the old ns2digger.exe and ns2digger.py
@@ -117,6 +120,13 @@ ZIP FILES
   folder ZIP only takes the files of the chosen types (the menu says which).
   While a ZIP is being made, a "Stop ZIP" button appears next to Extract (also in the
   right-click menu); stopping deletes the unfinished ZIP. Closing the program stops it too.
+  Bulk ZIP (button right of Bookmarks): paste file paths, one per line - full paths, paths within the scan
+  (base\romfs\...), with or without .json, folders too - then:
+    "ZIP JSON"  their JSON files from the scan's output folder
+    "ZIP ROM"   their original files from the game dump (a file that was inside an archive: the archive)
+    "ZIP both"  both, in folders JSON and ROM
+  Lines that aren't paths (headings such as "Send JSON") are ignored. Paths that can't be found are listed when
+  the ZIP is done; everything else is still zipped.
 
 OTHER FORMATS
   .bnvib   HD Rumble vibration patterns: sample rate, length in seconds, loop points
@@ -292,6 +302,8 @@ OTHER FORMATS
            steps are grouped, "continues at EventN" marks where paths meet. "Dialogue only" hides
            steps without text; "Show step settings" shows each step's parameters. Text can be
            selected and copied. Works without re-extracting.
+           Version 4 files (Nintendo Switch Sports Resort) also have sub-flows that return a result
+           ("return 1") and calls that branch on it ("run X and switch on its result" / "result 1:").
   Env\*.genvb.zs  lighting / environment archives, one per level, mini-game and menu. Inside, Nintendo AAMP
            parameter files (decoded to JSON; names are stored as hashes, about half are recovered -
            the rest show as 0x........):
@@ -415,6 +427,17 @@ OTHER FORMATS
            shortened), and the readable strings (memory address + text)
   exefs\main.npdm  program settings: name, main thread, title id, the system services it may
            use, file-system permissions and kernel capabilities
+  Nintendo Switch Sports Resort (NSSR) formats:
+  Mii\*.dat (88 bytes)  a Mii (Switch CharInfo): id, nickname and every face / body setting.
+  scft\*.otf  plain OpenType fonts (not scrambled): names, glyphs, characters; the Font viewer opens them.
+  GolfSwing\*.gswg  recorded golf swings: two numbers per frame (meaning not fully known), their ranges and peak.
+  BowlingReplay\*.bwr  recorded bowling throws: header, frame count, the 10 pins' flags and key frames
+           (the frame-by-frame movement isn't decoded yet).
+  Bake\Probe\Scene\<scene>\  baked light probes: meta.bkprmb = the grid (corner, block size, blocks),
+           X_Y_Z.bkprb / resident.bkprcb = cells naming their 8 corner probes (the light values aren't decoded yet).
+  Lib\NintendoSDK\IconBody.dat (NFIB)  the bodies drawn under Mii heads in icons: sizes and bounding box.
+  VoiceText\...  the text-to-speech engine (ReadSpeaker VoiceText): each file identified (language, voice,
+           engine version); word lists and the user dictionaries (how names are said) decoded in full.
   The extraction summary only lists formats it couldn't identify at all.
 
 VOXEL TERRAIN
@@ -552,8 +575,9 @@ VOXEL TERRAIN
     Gyml/FreerunCollectionListGParam/): "Marker: PSwitch" (the 394 P-switches, CmnObj_MissionGate000-003_S),
     "Marker: SpecialCoin" (the 200 Peach medallions, CmnObj_Coin001_A) and "Marker: HatenaPanel" (the 150 ? panels,
     CmnObj_HatenaBlockPanel000_A). Each is drawn as the game's own model at its real size and turn, on the whole
-    map and in area views. Right-click the view > Collectible size: real size, 2, 5, 10, 20, 50 or 100 times,
-    enlarged from each one's lowest point so it stays on its ground (kept by Save). Hover over one for what it is,
+    map and in area views. The size slider under the options ("P-switches, ? panels, medallions") enlarges them
+    from real size up to 100 times (fine steps at the small end), from each one's lowest point so it stays on its
+    ground; the view updates a moment after the slider stops (kept by Save). Hover over one for what it is,
     where, and its mission (text, time limit, sticker) or sticker. The entry's tooltip gives the list file, how many
     are in view and the objects.
     The sticker's picture shows just below that hover tip (P-switches: the mission's reward; ? panels: their own),
@@ -585,6 +609,20 @@ VOXEL TERRAIN
     a window with X after changing a saved view asks whether to save over it.
   "Top" (or T) looks straight down on anything in the 3D view (terrain maps: the world's square in the
     top-left corner; anything else centred); "Reset" (or R / double-click) goes back to the starting view.
+  "Walk the world" (Mario Kart World's whole-world view): see the world from inside it, the right way up, at a
+    tall person's eye height ("Player height" sets it: 1 to 10, 3.5 at first), dropping in just above the middle of the map. Click the view to look around with the mouse; WASD moves,
+    Space goes up, Shift down, Ctrl is faster, the scroll wheel or "Walking speed" sets the speed (10x at
+    first, 1x a notch, 1x to 100x); Esc lets the mouse go. Where you are shows under Show all / Hide all.
+    Around you the world loads in full detail (everything the "Open this area in full detail" view shows: scenery,
+    placed objects, collectibles, water) and the rest of the world stays at low detail. As you move, the next square
+    loads in the background (the old one stays shown meanwhile). "Full detail around you" sets the square's size:
+    bigger looks further but takes longer to load and uses more memory. The list on the right shows the square's
+    parts; untick any to hide them. Unticking "Walk the world" goes back to the whole map (it loads again).
+    "Collisions (C)" (on at first; C turns it on / off): what's drawn near you is solid - you walk with gravity, Space
+    jumps ("Jump height" sets how high), Ctrl runs, you slide along walls, step up kerbs and fall off ledges. Space twice quickly flies (Space / Shift
+    up / down); flying down onto the ground lands, Space twice in the air drops you. Water isn't solid (you walk on
+    the bottom); anything unticked in the list isn't solid either. With collisions off you fly through everything.
+    B tints the far-off, low-detail part of the world red (to see where full detail ends).
   "Export PNG" saves the 3D view exactly as shown, at the window's size (the name includes the ground layer).
     (Build .106 kept a "tex_cache" folder next to ns2dig.exe; it isn't used any more and can be deleted.)
   "Export 3D file" saves the part (at the current resolution, without hidden materials):
