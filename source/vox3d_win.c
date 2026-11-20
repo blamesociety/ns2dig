@@ -142,6 +142,8 @@ typedef struct {
     float yaw, pitch, dist, panx, pany;
     // walk the world (first person, Minecraft-style flying): position in the part's units, look angles, mouse captured
     HWND walkCb, collCb; int wColl, wFly, wOnGround; float wVy;
+    int wStartPending, wTicksDone, wLiftKeep;   /* walk start: waiting for the ticks' rebuild; started at a save point */
+    char (*wPreKeepName)[VOX_MATN]; unsigned char *wPreKeepHid; int wPreNkeep; char (*wPreKgName)[VOX_MATN]; unsigned char *wPreKgState; int wPreNkg;   /* the ticks before walking */
     int walk, wCap; float wpos[3], wyaw, wpitch, wEye, wMetre, wSpeedMul; DWORD wLastT, wLastSpace; POINT wCentre;
     // walking's streaming: the whole world at low resolution kept as a backdrop, the previous full-detail square while the
     // next one loads, the square's centre / size, the ground heights of the whole world, the "full detail" slider
@@ -2752,29 +2754,8 @@ static void V3ReloadWorld(V3 *v) {
             v->keepHidden[q] = v->hidden[k];
         }
     }
-    // whole groups ticked / unticked: things new to the next area follow them. Remembered for every group met so far (a group
-    // that isn't in this area keeps its state: an Area type unticked earlier stays unticked when it turns up again later)
-    if (v->partOk && v->part.nmat) {
-        int n = v->part.nmat < VOX_MAXMAT ? v->part.nmat : VOX_MAXMAT;
-        char (*gn)[VOX_MATN] = (char (*)[VOX_MATN])calloc((size_t)n, VOX_MATN); unsigned char *gs = (unsigned char *)calloc((size_t)n, 1); int ng = 0;
-        if (gn && gs) {
-            for (int k = 0; k < n; k++) {
-                char g[VOX_MATN]; V3MatCat(v, k, g);       // (the list's own groups)
-                int q = 0; while (q < ng && strcmp(gn[q], g)) q++;
-                if (q == ng) { snprintf(gn[q], VOX_MATN, "%s", g); gs[q] = 3; ng++; }
-                gs[q] &= v->hidden[k] ? 2 : 1;              // 1 = all ticked, 2 = all unticked, 0 = mixed
-            }
-            char (*kn)[VOX_MATN] = (char (*)[VOX_MATN])realloc(v->kgName, (size_t)(v->nkg + ng) * VOX_MATN);
-            unsigned char *ks = (unsigned char *)realloc(v->kgState, (size_t)(v->nkg + ng));
-            if (kn) v->kgName = kn; if (ks) v->kgState = ks;
-            if (kn && ks) for (int q = 0; q < ng; q++) {
-                int r = 0; while (r < v->nkg && strcmp(v->kgName[r], gn[q])) r++;
-                if (r == v->nkg) { snprintf(v->kgName[r], VOX_MATN, "%s", gn[q]); v->nkg++; }
-                v->kgState[r] = gs[q];
-            }
-        }
-        free(gn); free(gs);
-    }
+    // (whole groups: only what you tick / untick as a group counts - V3KgSet in V3ListTicked. Worked out from each area, a
+    // square with only some of a group's things, all ticked, made the whole group "all ticked" for every square after it)
     if (v->dropKeep) { v->nkeep = 0; v->dropKeep = 0; v->nkg = 0; }   // back to game colours from a layer: the usual ticks again
     v->partOk = 0; v->rebuildPending = 0;
     VoxFreePart(&v->part);
@@ -3464,7 +3445,7 @@ static float V3WalkGround(V3 *v, float x, float z, int *in) {
     for (int t = 0; t < 6; t++) {                       // the full-detail tiles' own ground (the same heights as drawn)
         struct V3Tile *T = &v->wTile[t]; if (!T->s.ok || !T->h || T->G < 2) continue;
         float fx = (x - T->ox) / T->st, fz = (z - T->oz) / T->st; int G = T->G;
-        if (fx < 0 || fz < 0 || fx > G - 1 || fz > G - 1) continue;
+        if (!(fx >= 0 && fz >= 0 && fx <= G - 1 && fz <= G - 1)) continue;     // (written so a NaN position is outside too)
         int ix = (int)fx, iz = (int)fz; if (ix > G - 2) ix = G - 2; if (iz > G - 2) iz = G - 2;
         float ax = fx - ix, az = fz - iz; const float *H = T->h + (size_t)iz * G + ix;
         *in = 1; return (H[0] * (1 - ax) + H[1] * ax) * (1 - az) + (H[G] * (1 - ax) + H[G + 1] * ax) * az;
@@ -3473,7 +3454,7 @@ static float V3WalkGround(V3 *v, float x, float z, int *in) {
     *in = 0;
     if (!v->wGrid || v->wGridW < 2) return 0;
     float fx = (x - v->wGox) / v->wGst, fz = (z - v->wGoz) / v->wGst; int G = v->wGridW;
-    if (fx < 0 || fz < 0 || fx > G - 1 || fz > G - 1) return 0;
+    if (!(fx >= 0 && fz >= 0 && fx <= G - 1 && fz <= G - 1)) return 0;
     int ix = (int)fx, iz = (int)fz; if (ix > G - 2) ix = G - 2; if (iz > G - 2) iz = G - 2;
     float tx = fx - ix, tz = fz - iz; const float *H = v->wGrid;
     float a = H[(size_t)iz * G + ix] * (1 - tx) + H[(size_t)iz * G + ix + 1] * tx, b = H[(size_t)(iz + 1) * G + ix] * (1 - tx) + H[(size_t)(iz + 1) * G + ix + 1] * tx;
@@ -3654,11 +3635,84 @@ static void V3WalkTileArrived(V3 *v) {
     V3ColBuild(v, T);                                     // its solid triangles, for collisions
     if (v->wLift) {                                       // just started: 5 above this tile's ground, once it's known
         int in = 0; float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
-        if (in) { v->wpos[1] = g + v->wEye + 21; v->wLift = 0; v->wVy = 0; v->wOnGround = 0; V3WalkInfo(v); }
+        if (in) { if (!v->wLiftKeep) v->wpos[1] = g + v->wEye + 21; v->wLift = 0; v->wLiftKeep = 0; v->wVy = 0; v->wOnGround = 0; V3WalkInfo(v); }
     }
 }
 static void V3ColFree(struct V3Tile *T) { free(T->ct); free(T->cStart); free(T->cIdx); T->ct = NULL; T->cStart = T->cIdx = NULL; T->nct = T->cw = T->chh = 0; }
 static void V3WalkTilesFree(V3 *v) { for (int t = 0; t < 6; t++) { V3SnapFree(v, &v->wTile[t].s); free(v->wTile[t].h); v->wTile[t].h = NULL; v->wTile[t].G = 0; V3ColFree(&v->wTile[t]); } v->wTileLoading = 0; }
+static void V3KeepSet(V3 *v, const char *name, unsigned char hid);
+static void V3KgSet(V3 *v, const char *g, unsigned char st);
+static void V3FillList(V3 *v);
+// ---- the walk's save point (Save while walking): where you are, which way you look, the options and every tick, in
+// <exe folder>\saved_views\walk_<hash>.txt (one per world: its folder). Ticking Walk the world again starts there.
+static void V3WalkSavePath(const V3 *v, wchar_t *out, size_t n, int makeDir) {
+    unsigned long long h = 1469598103934665603ULL; const wchar_t *k = v->dir;
+    for (const wchar_t *q = k; *q; q++) { h ^= (unsigned)*q; h *= 1099511628211ULL; }
+    for (const char *q = "|walk"; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211ULL; }
+    wchar_t exe[1024]; GetModuleFileNameW(NULL, exe, 1024); wchar_t *sl = wcsrchr(exe, L'\\'); if (sl) *sl = 0;
+    wchar_t d[1100]; swprintf(d, 1100, L"%ls\\saved_views", exe); if (makeDir) CreateDirectoryW(d, NULL);
+    swprintf(out, n, L"%ls\\walk_%016llx.txt", d, h);
+}
+static int V3WalkSave(V3 *v) {
+    if (!v->walk) return 0;
+    size_t cap = 8192 + (size_t)(v->nkeep + v->nkg + VOX_MAXMAT) * (VOX_MATN + 12), o = 0; char *t = (char *)malloc(cap); if (!t) return 0;
+    o += snprintf(t + o, cap - o, "ns2dig walk 1\npos %.4f %.4f %.4f\nlook %.4f %.4f\ncoll %d\nfly %d\nspeed %g\nheight %g\njump %g\ndet %d\n",
+                  v->wpos[0], v->wpos[1] - v->wEye, v->wpos[2], v->wyaw, v->wpitch, v->wColl, v->wFly, v->wSpeedMul, v->wHeight, v->wJump, v->wDet);
+    for (int q = 0; q < v->nkg && o + VOX_MATN + 12 < cap; q++) if (v->kgState[q] == 1 || v->kgState[q] == 2) o += snprintf(t + o, cap - o, "grp %d %s\n", v->kgState[q], v->kgName[q]);
+    for (int q = 0; q < v->nkeep && o + VOX_MATN + 12 < cap; q++) o += snprintf(t + o, cap - o, "hide %d %s\n", v->keepHidden[q] ? 1 : 0, v->keepName[q]);
+    if (v->partOk) for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT && o + VOX_MATN + 12 < cap; k++) o += snprintf(t + o, cap - o, "hide %d %s\n", v->hidden[k] ? 1 : 0, v->part.matName[k]);
+    wchar_t path[1300]; V3WalkSavePath(v, path, 1300, 1);
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL); int ok = 0;
+    if (f != INVALID_HANDLE_VALUE) { DWORD wr; ok = WriteFile(f, t, (DWORD)o, &wr, NULL) && wr == o; CloseHandle(f); }
+    free(t); return ok;
+}
+static char *V3WalkReadSave(V3 *v) {
+    wchar_t path[1300]; V3WalkSavePath(v, path, 1300, 0);
+    size_t n; unsigned char *b = VoxReadFile(path, &n); if (!b) return NULL;
+    char *t = (char *)realloc(b, n + 1); if (!t) { free(b); return NULL; } t[n] = 0;
+    if (strncmp(t, "ns2dig walk 1\n", 14)) { free(t); return NULL; }
+    return t;
+}
+// the walk's ticks, before it starts: from the save point, else Area off and Marker off except P-switches, ? panels and
+// special coins. Applied to the whole world (its far-off copy is built with them) and remembered by name for the squares.
+// Returns 1 if the whole world's ticks changed (it's built again first).
+static int V3WalkApplyTicks(V3 *v, const char *sv) {
+    // (the ticks before walking: put back when walking stops)
+    free(v->wPreKeepName); free(v->wPreKeepHid); free(v->wPreKgName); free(v->wPreKgState);
+    v->wPreNkeep = v->nkeep; v->wPreNkg = v->nkg;
+    v->wPreKeepName = v->nkeep ? (char (*)[VOX_MATN])malloc((size_t)v->nkeep * VOX_MATN) : NULL; v->wPreKeepHid = v->nkeep ? (unsigned char *)malloc((size_t)v->nkeep) : NULL;
+    v->wPreKgName = v->nkg ? (char (*)[VOX_MATN])malloc((size_t)v->nkg * VOX_MATN) : NULL; v->wPreKgState = v->nkg ? (unsigned char *)malloc((size_t)v->nkg) : NULL;
+    if (v->wPreKeepName && v->wPreKeepHid) { memcpy(v->wPreKeepName, v->keepName, (size_t)v->nkeep * VOX_MATN); memcpy(v->wPreKeepHid, v->keepHidden, (size_t)v->nkeep); } else v->wPreNkeep = 0;
+    if (v->wPreKgName && v->wPreKgState) { memcpy(v->wPreKgName, v->kgName, (size_t)v->nkg * VOX_MATN); memcpy(v->wPreKgState, v->kgState, (size_t)v->nkg); } else v->wPreNkg = 0;
+    for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++) V3KeepSet(v, v->part.matName[k], v->hidden[k]);   // (the world view's own, by name)
+    if (sv) {
+        for (const char *q = strstr(sv, "\ngrp "); q; q = strstr(q + 1, "\ngrp ")) {
+            int st = q[5] - '0'; const char *nm = q + 7, *e = strchr(nm, '\n'); char g[VOX_MATN];
+            snprintf(g, sizeof g, "%.*s", (int)(e ? e - nm : (long)strlen(nm)), nm); if (st == 1 || st == 2) V3KgSet(v, g, (unsigned char)st);
+        }
+        for (const char *q = strstr(sv, "\nhide "); q; q = strstr(q + 1, "\nhide ")) {
+            int hid = q[6] == '1'; const char *nm = q + 8, *e = strchr(nm, '\n'); char nmb[VOX_MATN];
+            snprintf(nmb, sizeof nmb, "%.*s", (int)(e ? e - nm : (long)strlen(nm)), nm); V3KeepSet(v, nmb, (unsigned char)hid);
+        }
+    } else {
+        V3KgSet(v, "Area", 2); V3KgSet(v, "Marker", 0);
+        for (int q = 0; q < v->nkeep; q++) {                  // (no save point: everything shown except Area and most markers)
+            const char *n = v->keepName[q];
+            if (!strncmp(n, "Area: ", 6)) v->keepHidden[q] = 1;
+            else if (!strncmp(n, "Marker: ", 8)) v->keepHidden[q] = strcmp(n + 8, "PSwitch") && strcmp(n + 8, "HatenaPanel") && strcmp(n + 8, "SpecialCoin");
+            else v->keepHidden[q] = 0;
+        }
+    }
+    // the whole world's own entries now: whole-group rules first, then each one's own (kept) tick
+    int changed = 0;
+    for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++) {
+        unsigned char h = v->hidden[k]; char g[VOX_MATN]; V3MatCat(v, k, g);
+        for (int q = 0; q < v->nkeep; q++) if (!strcmp(v->keepName[q], v->part.matName[k])) { h = v->keepHidden[q]; break; }
+        for (int q = 0; q < v->nkg; q++) if (!strcmp(v->kgName[q], g)) { if (v->kgState[q] == 1) h = 0; else if (v->kgState[q] == 2) h = 1; break; }
+        if (h != v->hidden[k]) { v->hidden[k] = h; changed = 1; }
+    }
+    return changed;
+}
 static void V3WalkStart(V3 *v) {
     VoxPart *p = &v->part;
     if (!v->haveMesh || !v->partOk || v->thread || !(p->terrWorld[2] > 0) || p->gridW < 2 || wcscmp(v->geom, L"terrainworld")) {
@@ -3666,6 +3720,15 @@ static void V3WalkStart(V3 *v) {
         if (v->thread) MessageBoxW(v->wnd, L"Wait for the view to finish loading first.", L"Walk the world", MB_OK | MB_ICONINFORMATION);
         return;
     }
+    char *sv = V3WalkReadSave(v);
+    if (!v->wTicksDone) {                                   // the walk's ticks first; if the world's change, it's built again, then on
+        if (V3WalkApplyTicks(v, sv)) {
+            V3FillList(v); v->wStartPending = 1;
+            swprintf(v->status, 256, L"Getting the world ready for walking..."); V3UpdateInfo(v);
+            V3RequestBuild(v); free(sv); return;
+        }
+    }
+    v->wTicksDone = 0;
     // eye height: about 1.7 times a P-switch (the collectibles are the game's own models at real size), else 1.7 units
     float eye = 1.7f;
     if (v->ncinst) { float hs[64]; int nh = 0; for (int i = 0; i < v->ncinst && nh < 64; i++) if (v->cinst[i].h > 0) hs[nh++] = v->cinst[i].h;
@@ -3691,9 +3754,24 @@ static void V3WalkStart(V3 *v) {
         cx = half; cz = half; gy = V3GridH(p, cx, cz, &in);
         v->wpos[0] = cx; v->wpos[2] = cz; v->wpos[1] = (in ? gy : 0) + eye + 21;  // ("21 above the ground" in the info box: you drop onto it)
     }
-    v->wyaw = 0; v->wpitch = 0; v->walk = 1; v->wLastT = GetTickCount(); v->wLift = 1;
+    v->wyaw = 0; v->wpitch = 0; v->walk = 1; v->wLastT = GetTickCount(); v->wLift = 1; v->wLiftKeep = 0;
     {   wchar_t ini[1024]; V3WalkIni(ini, 1024); v->wColl = GetPrivateProfileIntW(L"3d", L"walk_collide", 1, ini) ? 1 : 0; }
     v->wFly = 0; v->wVy = 0; v->wOnGround = 0; v->wLastSpace = 0;
+    if (sv) {                                               // the save point: there, looking that way, with its options
+        float x, fy, z, yw, pt, sp, ht, jp; int c, fl, dt;
+        const char *q;
+        if ((q = strstr(sv, "\nheight ")) && sscanf(q + 8, "%f", &ht) == 1 && ht >= 1 && ht <= 10) { v->wHeight = ht; v->wEye = ht * 0.93f; eye = v->wEye; }
+        if ((q = strstr(sv, "\njump ")) && sscanf(q + 6, "%f", &jp) == 1 && jp >= 0.25f && jp <= 5) v->wJump = jp;
+        if ((q = strstr(sv, "\nspeed ")) && sscanf(q + 7, "%f", &sp) == 1 && sp >= 1 && sp <= 100) v->wSpeedMul = roundf(sp);
+        if ((q = strstr(sv, "\ndet ")) && sscanf(q + 5, "%d", &dt) == 1 && dt >= 0 && dt <= 10) { v->wDet = dt; SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, dt); }
+        if ((q = strstr(sv, "\ncoll ")) && sscanf(q + 6, "%d", &c) == 1) v->wColl = c ? 1 : 0;
+        if ((q = strstr(sv, "\nfly ")) && sscanf(q + 5, "%d", &fl) == 1) v->wFly = fl ? 1 : 0;
+        if ((q = strstr(sv, "\nlook ")) && sscanf(q + 6, "%f %f", &yw, &pt) == 2 && isfinite(yw) && isfinite(pt)) { v->wyaw = yw; v->wpitch = pt; }
+        if ((q = strstr(sv, "\npos ")) && sscanf(q + 5, "%f %f %f", &x, &fy, &z) == 3 && isfinite(x) && isfinite(fy) && isfinite(z)) {
+            v->wpos[0] = x; v->wpos[1] = fy + v->wEye; v->wpos[2] = z; v->wLiftKeep = 1;   // (wait in the air there until the ground has loaded)
+        }
+    }
+    free(sv);
     SendMessageW(v->collCb, BM_SETCHECK, v->wColl ? BST_CHECKED : BST_UNCHECKED, 0); ShowWindow(v->collCb, SW_SHOW);
     v->wRadius = v->radius; V3SnapTake(v, &v->wBack);
     EnableWindow(v->lod, FALSE);                          // (the resolution: the squares are full detail, the backdrop as loaded)
@@ -3710,7 +3788,7 @@ static void V3WalkStart(V3 *v) {
     InvalidateRect(v->gl, NULL, FALSE);
 }
 static void V3WalkStop(V3 *v) {
-    V3WalkRelease(v); v->walk = 0; KillTimer(v->wnd, V3_TIMER_WALK);
+    V3WalkRelease(v); v->walk = 0; v->wStartPending = 0; KillTimer(v->wnd, V3_TIMER_WALK);
     if (v->walkCb) SendMessageW(v->walkCb, BM_SETCHECK, BST_UNCHECKED, 0);
     ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE); ShowWindow(v->wHgtLbl, SW_HIDE); ShowWindow(v->wHgtSl, SW_HIDE); ShowWindow(v->wJmpLbl, SW_HIDE); ShowWindow(v->wJmpSl, SW_HIDE); ShowWindow(v->wSpdLbl, SW_HIDE); ShowWindow(v->wSpdSl, SW_HIDE); ShowWindow(v->collCb, SW_HIDE); EnableWindow(v->lod, TRUE);
     V3WalkTilesFree(v); V3SnapFree(v, &v->wBack); free(v->wGrid); v->wGrid = NULL; v->wGridW = 0;
@@ -3718,6 +3796,12 @@ static void V3WalkStop(V3 *v) {
         v->wAreaOn = 0; swprintf(v->geom, 2048, L"terrainworld");
         if (v->haveMesh) V3FreeGLMesh(v);
         v->viewPending = 1; V3ReloadWorld(v);
+    }
+    if (v->wPreKeepName || v->wPreKgName || !v->wPreNkeep) {   // the ticks from before walking, for the world view again
+        v->nkeep = 0; for (int q = 0; q < v->wPreNkeep; q++) V3KeepSet(v, v->wPreKeepName[q], v->wPreKeepHid[q]);
+        v->nkg = 0; for (int q = 0; q < v->wPreNkg; q++) V3KgSet(v, v->wPreKgName[q], v->wPreKgState[q]);
+        free(v->wPreKeepName); free(v->wPreKeepHid); free(v->wPreKgName); free(v->wPreKgState);
+        v->wPreKeepName = NULL; v->wPreKeepHid = NULL; v->wPreKgName = NULL; v->wPreKgState = NULL; v->wPreNkeep = v->wPreNkg = 0;
     }
     swprintf(v->status, 256, L""); V3UpdateInfo(v); V3Layout(v);
     InvalidateRect(v->gl, NULL, FALSE);
@@ -3752,7 +3836,8 @@ static void V3ColVisit(V3 *v, float x, float z, float rad, void (*fn)(void *, co
 static void V3TriNormal(const float *c, float n[3]) {
     float e1[3] = { c[3] - c[0], c[4] - c[1], c[5] - c[2] }, e2[3] = { c[6] - c[0], c[7] - c[1], c[8] - c[2] };
     n[0] = e1[1] * e2[2] - e1[2] * e2[1]; n[1] = e1[2] * e2[0] - e1[0] * e2[2]; n[2] = e1[0] * e2[1] - e1[1] * e2[0];
-    float l = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]); if (l > 0) { n[0] /= l; n[1] /= l; n[2] /= l; }
+    float l = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (l > 1e-12f && isfinite(l)) { n[0] /= l; n[1] /= l; n[2] /= l; } else n[0] = n[1] = n[2] = 0;   // (0: a flat sliver - ignored)
 }
 // the height of a triangle above / below (x, z), if (x, z) is inside it seen from above
 static int V3TriYAt(const float *c, float x, float z, float *y) {
@@ -3798,10 +3883,10 @@ static void V3TriClosest(const float *p, const float *c, float o[3]) {
 struct V3ColPush { float c[3], r; int hit; };
 static void V3ColPushFn(void *ctx, const float *t) {       // a ball against walls: pushed out sideways (floors / ceilings: see above)
     struct V3ColPush *q = (struct V3ColPush *)ctx; float n[3]; V3TriNormal(t, n);
-    if (fabsf(n[1]) >= 0.7f) return;
+    if (fabsf(n[1]) >= 0.7f || (n[0] == 0 && n[1] == 0 && n[2] == 0)) return;
     float o[3]; V3TriClosest(q->c, t, o);
     float dx = q->c[0] - o[0], dy = q->c[1] - o[1], dz = q->c[2] - o[2], d = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (d >= q->r) return;
+    if (!(d < q->r)) return;                                   // (also a NaN distance)
     float hx = dx, hz = dz, hl = sqrtf(hx * hx + hz * hz);
     if (hl < 1e-5f) { hx = n[0]; hz = n[2]; hl = sqrtf(hx * hx + hz * hz); if (hl < 1e-5f) return; }
     float push = q->r - d; if (d < 1e-5f) push = q->r;
@@ -3852,6 +3937,7 @@ static void V3WalkPhys(V3 *v, float f, float r, float u, int sprint, float dt, f
         if (v->wFly && u < 0) v->wFly = 0;                                 // flying down onto the ground: landed (as in Minecraft)
     } else if (!v->wFly && was && v->wVy <= 0 && nf - gr <= step) { nf = gr; v->wVy = 0; v->wOnGround = 1; }   // down a step
     else v->wOnGround = 0;
+    if (!isfinite(x) || !isfinite(z) || !isfinite(nf)) { v->wVy = 0; return; }   // (never move to a NaN place: stay put)
     v->wpos[0] = x; v->wpos[2] = z; v->wpos[1] = nf + v->wEye;
 }
 // collisions on / off (C or the tick box); remembered in the program's .ini ([3d] walk_collide)
@@ -4742,7 +4828,7 @@ static WINDOWPLACEMENT g_v3Place; static int g_v3PlaceSet;      // the next wind
 static float V3GridH(const VoxPart *p, float x, float z, int *in) {
     int G1 = p->gridW; float ox = p->tv[0], oz = p->tv[2], st = p->tv[3] - p->tv[0];
     float fx = (x - ox) / st, fz = (z - oz) / st;
-    if (fx < 0 || fz < 0 || fx > G1 - 1 || fz > G1 - 1) { *in = 0; return 0; }
+    if (!(fx >= 0 && fz >= 0 && fx <= G1 - 1 && fz <= G1 - 1)) { *in = 0; return 0; }   // (NaN: outside too)
     *in = 1;
     int ix = (int)fx, iz = (int)fz; if (ix > G1 - 2) ix = G1 - 2; if (iz > G1 - 2) iz = G1 - 2;
     float ax = fx - ix, az = fz - iz;
@@ -5185,6 +5271,7 @@ static void V3ShowControls(V3 *v) {
         L"   Space twice\tfly / stop flying (flying down onto the ground lands)\r\n"
         L"   Flying\tSpace / Shift up / down, Ctrl twice as fast\r\n"
         L"   Wheel\tslower / faster: 1 x a notch (1 to 100 times, 10 at first)\r\n"
+        L"   Save\ta save point: where you are, the options and ticks (walking starts there next time)\r\n"
         L"\r\nBelow the Controls button: the place under the cursor. On terrain maps: the\r\n"
         L"game's world coordinates in metres (0 = the middle of the map), the height,\r\n"
         L"and the 125 m square (the X / Z in the light probe file names).";
@@ -5658,6 +5745,17 @@ static void V3SetAll(V3 *v, int show) {
 // a tick changed in the list (by click or keyboard): an entry, or a whole group
 // a whole group ticked / unticked: remembered by name at once - walking is nearly always loading the next square, and a
 // tick made then (the list's entries already gone) was lost; things in the group follow it in every square loaded after
+// a thing's tick remembered by name (things in the next area / square with that name follow it)
+static void V3KeepSet(V3 *v, const char *name, unsigned char hid) {
+    int q = 0; while (q < v->nkeep && strcmp(v->keepName[q], name)) q++;
+    if (q == v->nkeep) {
+        char (*nn)[VOX_MATN] = (char (*)[VOX_MATN])realloc(v->keepName, (size_t)(v->nkeep + 1) * VOX_MATN); if (nn) v->keepName = nn;
+        unsigned char *nh = (unsigned char *)realloc(v->keepHidden, (size_t)(v->nkeep + 1)); if (nh) v->keepHidden = nh;
+        if (!nn || !nh) return;
+        snprintf(v->keepName[q], VOX_MATN, "%s", name); v->nkeep++;
+    }
+    v->keepHidden[q] = hid;
+}
 static void V3KgSet(V3 *v, const char *g, unsigned char st) {
     int r = 0; while (r < v->nkg && strcmp(v->kgName[r], g)) r++;
     if (r == v->nkg) {
@@ -5680,6 +5778,9 @@ static void V3ListTicked(V3 *v, int row, int oldState, int newState) {
     } else {
         v->hidden[lm] = (unsigned char)(newState != 2);
         V3SetGroupRow(v, v->grpOfMat[lm]);
+        char g[VOX_MATN]; V3MatCat(v, lm, g);
+        for (int q = 0; q < v->nkg; q++) if (!strcmp(v->kgName[q], g)) v->kgState[q] = 0;   // (one thing on its own: the group is mixed now)
+        V3KeepSet(v, v->part.matName[lm], v->hidden[lm]);                                    // (remembered by name at once)
     }
     v->fillingList = 0;
 }
@@ -5872,7 +5973,7 @@ static void V3RestorePass(V3 *v) {
 }
 // closing with the window's X: offer to save over the saved view when it has changed (nothing saved: just close)
 static int V3AskSaveOnClose(V3 *v) {
-    if (!v->partOk || !v->haveMesh || v->restoreTxt) return 1;
+    if (!v->partOk || !v->haveMesh || v->restoreTxt || v->walk) return 1;   // (walking: Save is the save point - no question)
     char *old = V3ReadSavedView(v); if (!old) return 1;
     char *now = V3ViewText(v);
     int same = now && !strcmp(old, now);
@@ -6143,8 +6244,14 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         v->hasWater = v->hasCliffs = v->hasLandmarks = 0;           // terrain: every kind of thing is its own entry in the list (no tick boxes)
         if (V3IsTerrainGrid(v)) {
             ShowWindow(v->clothCb, SW_HIDE); ShowWindow(v->hbCb, SW_HIDE); ShowWindow(v->lmCb, SW_HIDE); ShowWindow(v->propCb, SW_HIDE);
+            int fresh = !v->nkeep && !v->nkg && !v->walk;     // just opened: the world view's own starting ticks
             for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++) {
                 v->hidden[k] = v->part.startHidden[k];
+                if (fresh || v->walk) {                            // the starting ticks (things not remembered by name / group):
+                    char g[VOX_MATN]; V3MatCat(v, k, g);           //  world view: everything except Area; walking: also Marker only
+                    const char *n = v->part.matName[k];            //  P-switches, ? panels, special coins (a saved view / point puts its own back)
+                    v->hidden[k] = !strcmp(g, "Area") ? 1 : (v->walk && !strcmp(g, "Marker")) ? (unsigned char)(strcmp(n, "Marker: PSwitch") && strcmp(n, "Marker: HatenaPanel") && strcmp(n, "Marker: SpecialCoin")) : 0;
+                }
                 for (int q = 0; q < v->nkeep; q++) if (!strcmp(v->keepName[q], v->part.matName[k])) { v->hidden[k] = v->keepHidden[q]; break; }   // as it was before reloading
                 if (v->kgName) {                                   // a whole group ticked / unticked: everything in it follows (also things met before)
                     char g[VOX_MATN]; V3MatCat(v, k, g);
@@ -6216,7 +6323,8 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (m) {
             V3Upload(v, m);
             VoxFreeMesh(m); free(m);
-            if (v->walk && v->wTileLoading) { V3WalkTileArrived(v); V3WalkPump(v); V3WalkInfo(v); }   // walking: the mesh becomes a tile; on to the next
+            if (v->walk && v->wTileLoading) { V3WalkTileArrived(v); V3WalkPump(v); V3WalkInfo(v); }
+            else if (v->wStartPending && !v->walk) { v->wStartPending = 0; v->wTicksDone = 1; swprintf(v->status, 256, L""); V3WalkStart(v); }   // (the world built with the walk's ticks: go)   // walking: the mesh becomes a tile; on to the next
             if (v->animSel > 0) V3ApplyPose(v);
             swprintf(v->status, 256, v->useVbo ? L"" : L"(Using basic OpenGL - rotating may be slow.)");
             if (v->part.gridW > 1 && v->part.terrWorld[2] > 0 && v->useVbo) swprintf(v->status, 256, L"Right-click the ground to open that area in full detail.");
@@ -6309,6 +6417,11 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case V3_RESET: V3ResetView(v); InvalidateRect(v->gl, NULL, FALSE); SetFocus(v->gl); break;
         case V3_CTLBTN: V3ShowControls(v); break;
         case V3_SAVEVIEW:
+            if (v->walk) {                                     // walking: the save point
+                if (V3WalkSave(v)) swprintf(v->status, 256, L"Save point saved: Walk the world starts here next time.");
+                else swprintf(v->status, 256, L"The save point couldn't be saved (the saved_views folder beside ns2dig.exe couldn't be written).");
+                V3UpdateInfo(v); SetFocus(v->gl); break;
+            }
             if (!v->partOk || !v->haveMesh) break;
             if (V3SaveView(v)) { swprintf(v->status, 256, L"View saved: it opens like this next time."); free(v->restoreTxt); v->restoreTxt = NULL; }
             else swprintf(v->status, 256, L"The view couldn't be saved (the saved_views folder beside ns2dig.exe couldn't be written).");
@@ -6473,7 +6586,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         while (PeekMessageW(&mm, hwnd, WM_V3_EXPORTED, WM_V3_EXPORTED, PM_REMOVE)) free((void *)mm.lParam);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         free(v->cpuVert); free(v->cpuIdx); free(v->runs);
-        free(v->keepName); free(v->keepHidden); free(v->kgName); free(v->kgState); free(v->allAct); free(v->names); free(v->restoreTxt); free(v->expName); free(v->actArc); free(v->miArc); free(v->genArc); free(v->wta); free(v->isl); free(v->cpt); free(v->actColl); free(v->cinst); free(v->corig); free(v->stkPx); if (v->stkWnd) DestroyWindow(v->stkWnd); free(v->stk); MsbtFree(&v->missMsg); for (int k = 0; k < VOX_MAXMAT; k++) free(v->pieceTxt[k]); free(v->prb); free(v->prbLoad); free(v->snd); free(v->sndLoad); free(v->meshSrc); free(v->animBuf); free(v->skinM); free(v->worldM); free(v->morphP); BfShapeAnimFree(&v->shAnim); BfVisAnimFree(&v->visAnim); BfMatAnimFree(&v->matAnim); for (int a = 0; a < v->nAtt; a++) { BfShapeAnimFree(&v->att[a].sh); BfVisAnimFree(&v->att[a].vis); BfMatAnimFree(&v->att[a].mat); } free(v->posedP); free(v->posedN);
+        free(v->keepName); free(v->keepHidden); free(v->kgName); free(v->kgState); free(v->wPreKeepName); free(v->wPreKeepHid); free(v->wPreKgName); free(v->wPreKgState); free(v->allAct); free(v->names); free(v->restoreTxt); free(v->expName); free(v->actArc); free(v->miArc); free(v->genArc); free(v->wta); free(v->isl); free(v->cpt); free(v->actColl); free(v->cinst); free(v->corig); free(v->stkPx); if (v->stkWnd) DestroyWindow(v->stkWnd); free(v->stk); MsbtFree(&v->missMsg); for (int k = 0; k < VOX_MAXMAT; k++) free(v->pieceTxt[k]); free(v->prb); free(v->prbLoad); free(v->snd); free(v->sndLoad); free(v->meshSrc); free(v->animBuf); free(v->skinM); free(v->worldM); free(v->morphP); BfShapeAnimFree(&v->shAnim); BfVisAnimFree(&v->visAnim); BfMatAnimFree(&v->matAnim); for (int a = 0; a < v->nAtt; a++) { BfShapeAnimFree(&v->att[a].sh); BfVisAnimFree(&v->att[a].vis); BfMatAnimFree(&v->att[a].mat); } free(v->posedP); free(v->posedN);
         BfSkelAnimFree(&v->anim); BfAnimFileFree(&v->anims); for (int c = 0; c < v->nsim; c++) ClothSimFree(&v->sim[c]); HbFree(&v->hb); free(v->patOn); free(v->patRGB); if (v->fxOn) BfColAnimFree(&v->fx); for (int k = 0; k < v->ncolF; k++) BfAnimFileFree(&v->colF[k]);
         for (int a = 0; a < v->nAtt; a++) BfSkelAnimFree(&v->att[a].anim);
         for (int i = 0; i < v->nAttFile; i++) BfAnimFileFree(&v->attFile[i]);

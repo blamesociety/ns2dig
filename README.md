@@ -30,15 +30,12 @@ Get the latest `ns2dig.zip` from the [Releases](../../releases) page, unzip it a
 | Folder | What's in it |
 |---|---|
 | `source/` | The app (C) and the scanner (`ns2dig.py`), plus the bundled open-source libraries |
-| `demo/` | The demo ROM generator (`make_demo.py`, `demo_*.py`), its tools and its media |
 | `README.txt` | The full manual (also shipped in the release zip) |
 
 ## Building
 
 On Windows, with Python 3 installed, run `source\build.bat`. It installs the Zig compiler with pip
 the first time, then builds `ns2dig.exe` in the top folder and copies `ns2dig.py` next to it.
-
-To rebuild the demo ROM, see `demo/README.txt`.
 
 ## Trying the demo ROM
 
@@ -96,7 +93,7 @@ as a real game, so you can try every viewer without a game dump.
 
 3D exports are always in the model's resting pose, not the current animation frame.
 
-`demo/README.txt` lists everything in the demo and where to find it.
+`demo\README.txt` in the release zip lists everything in the demo and where to find it.
 
 ## Legal
 

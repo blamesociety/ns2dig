@@ -4,7 +4,7 @@ ns2dig - Nintendo Switch 2 game RomFS extractor and browser
 DEMO
     The "demo" folder beside ns2dig.exe is a tiny made-up world (an island with a mountain in a sea) in the file
     formats ns2dig reads, for trying the app without a game dump. Scan the demo folder like a dump; see
-    demo\README.txt. Nothing in it comes from any game (demo\make_demo.py rebuilds it).
+    demo\README.txt. Nothing in it comes from any game.
 
 SETUP (once)
   1. Install Python 3 from python.org (tick "Add python.exe to PATH").
@@ -623,6 +623,9 @@ VOXEL TERRAIN
     up / down); flying down onto the ground lands, Space twice in the air drops you. Water isn't solid (you walk on
     the bottom); anything unticked in the list isn't solid either. With collisions off you fly through everything.
     B tints the far-off, low-detail part of the world red (to see where full detail ends).
+    Save while walking makes a save point: where you are, which way you look, collisions / flying, the sliders and
+    every tick. Ticking Walk the world again starts there. Without a save point, walking starts with the Area group
+    off and only the P-switch, ? panel and special coin markers shown.
   "Export PNG" saves the 3D view exactly as shown, at the window's size (the name includes the ground layer).
     (Build .106 kept a "tex_cache" folder next to ns2dig.exe; it isn't used any more and can be deleted.)
   "Export 3D file" saves the part (at the current resolution, without hidden materials):
