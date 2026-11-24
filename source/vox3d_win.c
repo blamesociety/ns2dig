@@ -19,7 +19,8 @@ void UiSkinWindow(HWND top);
 #include <stdarg.h>
 #include <ctype.h>
 
-#define V3_MAXTEX 4096
+#define V3_MAXTEX 16384             // (was 4096: walking with a big full-detail area (6000 x 6000) and all the foliage met more
+                                   // textures than that, and everything past it was drawn untextured)
 typedef wchar_t VOXCHAR;
 #define VOXSTR(x) L##x
 #define VOXFMT L"ls"
@@ -102,7 +103,7 @@ typedef struct {
     int stride;                       // bytes per vertex: 20, or 28 with texture coordinates
     struct { int mat; GLsizei first, count; } *runs; int nruns;   // triangles grouped by part (models)
     // model textures: decoded in the loader thread, uploaded on WM_V3_LOADED
-    struct { char key[200]; unsigned char *rgba; int w, h, alpha; GLuint id; } tex[V3_MAXTEX]; int ntex;
+    struct { char key[200]; unsigned char *rgba; int w, h, alpha; GLuint id; } tex[V3_MAXTEX]; int ntex; int texDropped;   // (texDropped: textures that didn't fit in the table)
     char (*mtexName)[128]; int *mtexTex; int nmtex, capmtex;   // MKW terrain: textures of placed scenery (slot -> name, -> tex index)
     int partTex[VOX_MAXMAT];                 // part -> tex index, -1 none
     int partMix[VOX_MAXMAT];                 // part -> its eye-shine (EmmMix) texture, -1 none
@@ -154,7 +155,7 @@ typedef struct {
     struct V3Tile { int tx, tz, stale; struct V3Snap s; float *h, ox, oz, st, cb[4]; int G;
                     float *ct; int nct, cw, chh; int *cStart, *cIdx; float cx0, cz0, ccs; } wTile[6];   /* ct: its solid triangles (9 floats), in a grid of cells for collisions */ int wLoadTx, wLoadTz, wTileLoading, wLoadBuild, wLift, wGridN, wDbgBack;
     char (*kgName)[VOX_MATN]; unsigned char *kgState; int nkg;   // list groups all ticked (1) / all unticked (2) before a reload
-    float *wGrid; int wGridW; float wGox, wGoz, wGst, wWorldW[4], wRadius; int wDet, wAreaOn; HWND wDetLbl, wDetSl, wHgtLbl, wHgtSl, wJmpLbl, wJmpSl, wSpdLbl, wSpdSl; float wHeight, wJump, wBR[4]; int wBROk;
+    float *wGrid; int wGridW; float wGox, wGoz, wGst, wWorldW[4], wRadius; int wDet, wAreaOn; HWND wDetLbl, wDetSl, wHgtLbl, wHgtSl, wJmpLbl, wJmpSl, wSpdLbl, wSpdSl; float wHeight, wJump, wBR[4], wBRg[4]; int wBROk, wBRgOk;
     int dragging; POINT last;
     int cutPos;                      // 0..1000 (1000 = no cut)
     int fillingList;
@@ -239,7 +240,62 @@ static unsigned char *V3ReadTexL(const wchar_t *modelPath, const char *name, int
     }
     return NULL;
 }
+// a texture's average brightness (each texel's brightest channel; sampled)
+static double V3TexBright(const unsigned char *px, int w, int h) {
+    size_t n = (size_t)w * h, step = n > 65536 ? n / 65536 : 1, c = 0; double sum = 0;
+    for (size_t k = 0; k < n; k += step, c++) { const unsigned char *q = px + k * 4; int m = q[0] > q[1] ? q[0] : q[1]; sum += m > q[2] ? m : q[2]; }
+    return c ? sum / c : 0;
+}
 static unsigned char *V3ReadTex(const wchar_t *modelPath, const char *name, int *w, int *h) {
+    const char *tl = strchr(name, '~');
+    if (tl) {
+        // "a1~a0" (a material's second colour texture, then its first): the second unless it's darker than the first
+        // (then it's a pattern blended on top, e.g. DK Pass's near-black SnowLine_00 lines over the snow)
+        char an[128]; snprintf(an, sizeof an, "%.*s", (int)(tl - name), name);
+        int w1 = 0, h1 = 0, w0 = 0, h0 = 0;
+        unsigned char *p1 = V3ReadTex(modelPath, an, &w1, &h1), *p0 = V3ReadTex(modelPath, tl + 1, &w0, &h0);
+        if (p1 && (!p0 || V3TexBright(p1, w1, h1) >= V3TexBright(p0, w0, h0))) { free(p0); *w = w1; *h = h1; return p1; }
+        free(p1); if (p0) { *w = w0; *h = h0; } return p0;
+    }
+    if (!strncmp(name, "*Glow:", 6)) {
+        // a strongly glowing material drawn from its glow texture (the boost arches): brightened x2.2, lit as in the game
+        unsigned char *px = V3ReadTex(modelPath, name + 6, w, h); if (!px) return NULL;
+        for (size_t k = 0; k < (size_t)*w * *h; k++) for (int c = 0; c < 3; c++) {
+            int v2 = px[k * 4 + c] * 11 / 5; px[k * 4 + c] = (unsigned char)(v2 > 255 ? 255 : v2); }
+        return px;
+    }
+    if (!strncmp(name, "*Aurora:", 8)) {
+        // the Aurora track: a bright cyan base with its glow texture added (as in the game: glowing cyan water)
+        unsigned char *px = V3ReadTex(modelPath, name + 8, w, h); if (!px) return NULL;
+        // only its speckle: the glow's bright edge columns and its lighter sides (across the road) repeated along the
+        // road as stripes in .218-.219 - the outer 3% of columns is taken from further in, and every column is evened
+        // out to the texture's average brightness
+        static const int base[3] = { 20, 120, 170 };
+        int W = *w, H = *h, E = W * 3 / 100;
+        double *cm = (double *)calloc((size_t)W * 3, sizeof(double)); unsigned char *o = (unsigned char *)malloc((size_t)W * H * 4);
+        if (!cm || !o) { free(cm); free(o); return px; }
+        double g[3] = { 0, 0, 0 };
+        for (int x = 0; x < W; x++) {
+            int sx = x < E ? x + 2 * E : x >= W - E ? x - 2 * E : x; if (sx < 0 || sx >= W) sx = x;
+            for (int y = 0; y < H; y++) for (int c = 0; c < 3; c++) cm[x * 3 + c] += px[((size_t)y * W + sx) * 4 + c];
+            for (int c = 0; c < 3; c++) { cm[x * 3 + c] /= H; g[c] += cm[x * 3 + c] / W; }
+        }
+        for (int x = 0; x < W; x++) {
+            int sx = x < E ? x + 2 * E : x >= W - E ? x - 2 * E : x; if (sx < 0 || sx >= W) sx = x;
+            for (int y = 0; y < H; y++) for (int c = 0; c < 3; c++) {
+                double v2 = base[c] + (px[((size_t)y * W + sx) * 4 + c] - cm[x * 3 + c] + g[c]) * 1.5;
+                o[((size_t)y * W + x) * 4 + c] = (unsigned char)(v2 < 0 ? 0 : v2 > 255 ? 255 : v2);
+            }
+            for (int y = 0; y < H; y++) o[((size_t)y * W + x) * 4 + 3] = 255;
+        }
+        free(cm); free(px); px = o;
+        return px;
+    }
+    if (!strcmp(name, "*Dark")) {                    // a material with no colour texture whose colour is black (drive_albedo_color 900)
+        unsigned char *px = (unsigned char *)malloc(4 * 4 * 4); if (!px) return NULL;
+        for (int i = 0; i < 16; i++) { px[i * 4] = 22; px[i * 4 + 1] = 22; px[i * 4 + 2] = 24; px[i * 4 + 3] = 255; }
+        *w = *h = 4; return px;
+    }
     wchar_t roots[12][1024]; int nr = V3RomfsRoots(modelPath, roots);
     for (int r = 0; r < nr; r++) {
         wchar_t f[1200]; swprintf(f, 1200, L"%ls\\Tex\\%hs.bntx.zs", roots[r], name);
@@ -256,6 +312,11 @@ static unsigned char *V3ReadTex(const wchar_t *modelPath, const char *name, int 
     }
     return NULL;
 }
+// which channel of an opacity map / mask holds the cut-out: its alpha when it has one (some under 250), else red
+static int V3OpcChan(const unsigned char *op, int ow, int oh) {
+    for (size_t k = 0; k < (size_t)ow * oh; k++) if (op[k * 4 + 3] < 250) return 3;
+    return 0;
+}
 // a material's colour texture as RGBA (the albedo, with the opacity map in alpha for fur cards); NULL if not found
 static unsigned char *V3ReadMatTex(const wchar_t *dir, const VoxPart *p, int id, int *w, int *h, int *alpha) {
     *alpha = 0;
@@ -263,8 +324,9 @@ static unsigned char *V3ReadMatTex(const wchar_t *dir, const VoxPart *p, int id,
     if (px && p->texOpc[id][0]) {                  // opacity map -> alpha (fur cards)
         int ow = 0, oh = 0; unsigned char *op = V3ReadTex(dir, p->texOpc[id], &ow, &oh);
         if (op) {
+            int ch = V3OpcChan(op, ow, oh);
             for (int y = 0; y < *h; y++) for (int x = 0; x < *w; x++)
-                px[((size_t)y * *w + x) * 4 + 3] = op[((size_t)(y * oh / *h) * ow + (x * ow / *w)) * 4];
+                px[((size_t)y * *w + x) * 4 + 3] = op[((size_t)(y * oh / *h) * ow + (x * ow / *w)) * 4 + ch];
             free(op); *alpha = 1;
         }
     }
@@ -1130,6 +1192,10 @@ static uint16_t V3TexSlot(V3 *v, const VoxPart *m, unsigned part) {
     // (only the ? panels: the P-switch's array faces looked wrong with their glow - plain albedo, first layer, for them)
     if (strstr(m->texAlb[part], "HatenaPanel_Array_") && m->texEmm[part][0] && strlen(m->texAlb[part]) + strlen(m->texEmm[part]) + 2 <= sizeof nm)
         snprintf(nm, sizeof nm, "%s|%s", m->texAlb[part], m->texEmm[part]);
+    // an opacity map (_o0) cuts the shape: "albedo#opacity" (e.g. the _Far suspension bridges' cable cards - without
+    // it the cards were solid black rectangles)
+    else if (m->texOpc[part][0] && strlen(m->texAlb[part]) + strlen(m->texOpc[part]) + 2 <= sizeof nm)
+        snprintf(nm, sizeof nm, "%s#%s", m->texAlb[part], m->texOpc[part]);
     for (int i = 0; i < v->nmtex; i++) if (!strcmp(v->mtexName[i], nm)) return (uint16_t)i;
     if (v->nmtex >= 0xFFF0) return 0xFFFF;
     if (v->nmtex == v->capmtex) {
@@ -1268,6 +1334,30 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
             free(b);
         } while (FindNextFileW(fh, &fd));
         FindClose(fh);
+    }
+    // foliage: trees, bushes, grass tufts, stones, flowers... (MKW: ~59,000) aren't in the Banc placement files but in
+    // Foliage\<scene>\FoliageInstance.byml - an array of { actor_name, pos, rot (radians), scale, guid, ... }.
+    // (FoliageImpostor.byml = the far-off stand-ins of some of the same ones, same guids: not read.)
+    {   const wchar_t *sc = !wcsncmp(fold[0], L"World_", 6) ? fold[0] + 6 : fold[0];
+        wchar_t fp[2300]; swprintf(fp, 2300, L"%ls\\Foliage\\%ls\\FoliageInstance.byml", root, sc);
+        size_t zn; unsigned char *z = VoxReadFile(fp, &zn);
+        if (!z) { swprintf(fp, 2300, L"%ls\\Foliage\\%ls\\FoliageInstance.byml.zs", root, sc); z = VoxReadFile(fp, &zn); }
+        size_t n = 0; unsigned char *b = z ? VoxUnzstd(z, zn, &n) : NULL; free(z);
+        if (b) {
+            Byml y; BymlNode r = BymlOpen(&y, b, n);
+            int cnt = BymlCount(&y, r);
+            for (int i = 0; i < cnt; i++) {
+                BymlNode a = BymlAt(&y, r, i);
+                const char *nm = BymlStr(&y, BymlGet(&y, a, "actor_name")); if (!nm || !nm[0]) continue;
+                V3Act A; memset(&A, 0, sizeof A); snprintf(A.nm, sizeof A.nm, "%s", nm);
+                BymlNode t = BymlGet(&y, a, "pos"), ro = BymlGet(&y, a, "rot"), scl = BymlGet(&y, a, "scale");
+                for (int k = 0; k < 3; k++) { A.T[k] = BymlFloat(BymlAt(&y, t, k), 0); A.R[k] = BymlFloat(BymlAt(&y, ro, k), 0); A.S[k] = scl.type == 0xC0 ? BymlFloat(BymlAt(&y, scl, k), 1) : 1; }
+                if (v->nAllAct == cap) { V3Act *na = (V3Act *)realloc(act, (size_t)cap * 2 * sizeof(V3Act)); if (!na) break; act = na; cap *= 2; }
+                act[v->nAllAct++] = A;
+                V3Name *e = V3NameGet(v, A.nm, 1); if (e) e->count++;
+            }
+            free(b);
+        }
     }
     free(seen);
     v->allAct = act;
@@ -2144,6 +2234,29 @@ static void V3AddGridifyPieces(V3 *v) {
                 if (matOf[pt] == -2) {
                     char both[200]; snprintf(both, sizeof both, "%s|%s", m->shapeFull[pt][0] ? m->shapeFull[pt] : m->matName[pt], m->matFull[pt]);
                     char ent[VOX_MATN]; V3PieceEntry(both, ent, sizeof ent);
+                    // a special surface merged into the ground pieces whose object has no model file of its own (MKW's
+                    // ghost swamp, CmnObj_SpecialSurfaceGhostValley000_A: only a marker from its placement) is drawn from
+                    // here: "Surface: GhostValley000_A - Marsh00". (Those with a model are drawn from it - skipped here.)
+                    const char *ss = strstr(both, "CmnObj_SpecialSurface");
+                    if (!ent[0] && ss) {
+                        char obj[128]; size_t ol = 0;
+                        while (ss[ol] && ol < sizeof obj - 1 && strncmp(ss + ol, "_Mt_", 4) && ss[ol] != '|') { obj[ol] = ss[ol]; ol++; }
+                        obj[ol] = 0;
+                        char base2[128]; snprintf(base2, sizeof base2, "%s", obj); char *us = strrchr(base2, '_'); if (us) *us = 0;
+                        const wchar_t *mdir = wcsstr(jobs[j].path, L"\\Model\\");
+                        BOOL hasModel = TRUE;
+                        if (mdir && us) {
+                            wchar_t mf[2400]; swprintf(mf, 2400, L"%.*ls\\Model\\%hs.%hs.bfres.zs", (int)(mdir - jobs[j].path), jobs[j].path, base2, obj);
+                            hasModel = GetFileAttributesW(mf) != INVALID_FILE_ATTRIBUTES;
+                        }
+                        if (!hasModel) {
+                            char sh[128]; V3ObjShort(obj, sh, sizeof sh);
+                            const char *s2 = !strncmp(sh, "SpecialSurface", 14) ? sh + 14 : sh;
+                            const char *part = strstr(both, "_Mt_"); part = part ? part + 4 : (m->matName[pt]);
+                            char pn[64]; snprintf(pn, sizeof pn, "%s", part); char *bar = strchr(pn, '|'); if (bar) *bar = 0;
+                            snprintf(ent, sizeof ent, "Surface: %s - %s", s2, pn);
+                        }
+                    }
                     int had = p->nmat;
                     matOf[pt] = ent[0] ? PhMat(p, ent) : -1;
                     if (ent[0] && !strncmp(ent, "Scenery:", 8) && matOf[pt] >= had && matOf[pt] < VOX_MAXMAT) p->startHidden[matOf[pt]] = 1;
@@ -2242,7 +2355,7 @@ static void V3TexJobFn(void *ctx, int i) {
         int cw, ch, ca; unsigned char *c = V3CacheLoad(cp, sz, tm, &cw, &ch, &ca);
         if (c) { j->px = c; j->w = cw; j->h = ch; j->alpha = ca; return; }
     }
-    int w = 0, h = 0; unsigned char *px = NULL;
+    int w = 0, h = 0, cut = 0; unsigned char *px = NULL;
     const char *bar = strchr(name, '|');
     if (bar) {
         // "albedo|emission", both array textures (one layer per state): the state whose glow is brightest (a ? panel
@@ -2266,6 +2379,17 @@ static void V3TexJobFn(void *ctx, int i) {
                 for (int c = 0; c < 3; c++) { int v2 = d[c] + q[c] * 5 / 2; d[c] = (unsigned char)(v2 > 255 ? 255 : v2); }   // (glow x2.5: lit as in the game, not shaded)
             }
         free(em);
+    } else if (strchr(name, '#')) {
+        // "albedo#opacity": the opacity map (its red channel) goes into alpha
+        const char *hs = strchr(name, '#'); char an[128]; snprintf(an, sizeof an, "%.*s", (int)(hs - name), name);
+        px = V3ReadTex(j->v->dir, an, &w, &h);
+        int ow = 0, oh = 0; unsigned char *op = px ? V3ReadTex(j->v->dir, hs + 1, &ow, &oh) : NULL;
+        if (op && ow > 0 && oh > 0) {
+            cut = 1; int ch = V3OpcChan(op, ow, oh);
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+                px[((size_t)y * w + x) * 4 + 3] = op[((size_t)(y * oh / h) * ow + (x * ow / w)) * 4 + ch];
+        }
+        free(op);
     } else px = V3ReadTex(j->v->dir, name, &w, &h);
     if (!px || w < 1 || h < 1) { free(px); return; }
     if (strstr(name, "Lava") && strlen(name) > 4 && !strcmp(name + strlen(name) - 4, "_Alb")) {
@@ -2290,9 +2414,19 @@ static void V3TexJobFn(void *ctx, int i) {
     unsigned char *o = (unsigned char *)malloc((size_t)W * H * 4); if (!o) { free(px); return; }
     int sx = w / W, sy = h / H, al = 0;
     for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {               // box filter
-        unsigned acc[4] = { 0, 0, 0, 0 };
-        for (int yy = 0; yy < sy; yy++) for (int xx = 0; xx < sx; xx++) { const unsigned char *q = px + ((size_t)(y * sy + yy) * w + x * sx + xx) * 4; for (int c = 0; c < 4; c++) acc[c] += q[c]; }
+        unsigned acc[4] = { 0, 0, 0, 0 }, wc[3] = { 0, 0, 0 }, aw = 0, amax = 0;
+        for (int yy = 0; yy < sy; yy++) for (int xx = 0; xx < sx; xx++) {
+            const unsigned char *q = px + ((size_t)(y * sy + yy) * w + x * sx + xx) * 4; for (int c = 0; c < 4; c++) acc[c] += q[c];
+            for (int c = 0; c < 3; c++) wc[c] += q[c] * q[3];
+            aw += q[3]; if (q[3] > amax) amax = q[3];
+        }
         unsigned char *d = o + ((size_t)y * W + x) * 4; for (int c = 0; c < 4; c++) d[c] = (unsigned char)(acc[c] / (sx * sy));
+        if (cut) {
+            // cut-out by an opacity map (thin cables, wires): shrinking by averaging would fade them below the cut-off
+            // and they'd vanish - keep a texel solid if any of its source texels is, coloured by the solid ones only
+            d[3] = (unsigned char)amax;
+            if (aw) for (int c = 0; c < 3; c++) d[c] = (unsigned char)(wc[c] / aw);
+        }
         if (d[3] < 128) al = 1;
     }
     free(px);
@@ -2304,16 +2438,26 @@ static void V3LoadModelTextures(V3 *v) {
     int size = v->part.terrArea[2] > 0 ? 256 : 64;
     V3TexJob *jobs = (V3TexJob *)calloc(v->nmtex + 1, sizeof *jobs); int nj = 0;
     if (!jobs) return;
+    // the textures already loaded, by name (a hash table: with thousands of each, comparing every pair took seconds)
+    unsigned hn = 1; while (hn < (unsigned)v->ntex * 2 + 2) hn <<= 1;
+    int *ht = (int *)malloc(hn * sizeof(int));
+    #define V3KEYHASH(s_) ({ unsigned h_ = 2166136261u; for (const unsigned char *c_ = (const unsigned char *)(s_); *c_; c_++) h_ = (h_ ^ *c_) * 16777619u; h_; })
+    if (ht) { for (unsigned i = 0; i < hn; i++) ht[i] = -1;
+              for (int t = 0; t < v->ntex; t++) { unsigned h = V3KEYHASH(v->tex[t].key) & (hn - 1); while (ht[h] >= 0) h = (h + 1) & (hn - 1); ht[h] = t; } }
     for (int i = 0; i < v->nmtex; i++) {
         char key[200]; snprintf(key, sizeof key, "mdl|%d|%s", size, v->mtexName[i]);
-        int k = -1; for (int t = 0; t < v->ntex; t++) if (!strcmp(v->tex[t].key, key)) { k = t; break; }
+        int k = -1;
+        if (ht) { unsigned h = V3KEYHASH(key) & (hn - 1); while (ht[h] >= 0) { if (!strcmp(v->tex[ht[h]].key, key)) { k = ht[h]; break; } h = (h + 1) & (hn - 1); } }
+        else for (int t = 0; t < v->ntex; t++) if (!strcmp(v->tex[t].key, key)) { k = t; break; }
         v->mtexTex[i] = k;
         if (k < 0) { jobs[nj].v = v; jobs[nj].slot = i; jobs[nj].size = size; nj++; }
     }
+    #undef V3KEYHASH
+    free(ht);
     V3StageCount(v, L"Loading the objects' textures", 840, 90, nj);
     V3ParallelFor(nj, V3TexJobCounted, jobs);
     for (int j = 0; j < nj; j++) {
-        if (v->ntex >= V3_MAXTEX) { free(jobs[j].px); continue; }
+        if (v->ntex >= V3_MAXTEX) { if (jobs[j].px) v->texDropped++; free(jobs[j].px); continue; }
         int k = v->ntex++; snprintf(v->tex[k].key, sizeof v->tex[k].key, "mdl|%d|%s", size, v->mtexName[jobs[j].slot]);
         v->tex[k].rgba = jobs[j].px; v->tex[k].w = jobs[j].w; v->tex[k].h = jobs[j].h; v->tex[k].alpha = jobs[j].alpha; v->tex[k].id = 0;
         v->mtexTex[jobs[j].slot] = jobs[j].px ? k : -1;
@@ -2826,6 +2970,14 @@ static void V3UpdateInfo(V3 *v) {
                      p->shapeType, p->ntv ? hi[0] - lo[0] : 0, p->ntv ? hi[1] - lo[1] : 0, p->ntv ? hi[2] - lo[2] : 0, tv, tt,
                      p->gcol && p->overlay ? L"Ground coloured by the chosen layer; ground materials" : p->gcol ? L"Game colours (color_mul2); ground materials" : !strncmp(p->matName[0], "height band", 11) ? L"Height bands (no .mate file beside it)" : L"Ground materials (from the .mate file)", p->nmat,
                      v->walk ? L"" : L"\r\nTriangles shown: ", v->walk ? L"" : v->haveMesh ? c : L"-", v->status);
+            {   // textures held, and roughly what they take on the graphics card (RGBA, + 1/3 for the smaller copies)
+                double mb = 0; int held = 0;
+                for (int k = 0; k < v->ntex; k++) if (v->tex[k].id || v->tex[k].rgba) { held++; mb += (double)v->tex[k].w * v->tex[k].h * 4 * 4 / 3 / 1048576.0; }
+                wchar_t hn[64], dn[64]; V3Num(hn, 64, (double)held); V3Num(dn, 64, (double)v->texDropped);
+                size_t l = wcslen(t);
+                swprintf(t + l, 1600 - l, L"\r\nTextures: %ls, ~%.0f MB GPU%ls%ls%ls", hn, mb,
+                         v->texDropped ? L" (" : L"", v->texDropped ? dn : L"", v->texDropped ? L" didn't fit - drawn without)" : L"");
+            }
             if (v->nprb && v->prbSel > 0) {
                 size_t l = wcslen(t); wchar_t pn[64]; V3Num(pn, 64, (double)v->nprb);
                 if (v->prbSel <= 8) swprintf(t + l, 1600 - l, L"\r\nLight probes (%hs%hs): %ls dots, values %d-%d as red, green, blue (square root; full at %.3g)", v->prbFile, v->nprbFine ? " + finer .dlpg grids" : "", pn, (v->prbSel - 1) * 3 + 1, (v->prbSel - 1) * 3 + 3, v->prbHi[0]);
@@ -3339,6 +3491,29 @@ static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
             // layering: the ground a little behind, see-through decals (road lines) a little in front of what they lie on
             if (R->kind == 0) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(1.5f, 6); }
             else if (R->kind == 2 && R->alpha) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.5f, -6); }
+            if (S == &v->wBack && v->wBRgOk && v->walk && (R->kind == 0 || R->kind == 1 || R->kind == 4)) {
+                // the far-off world's ground / water: whole outside the loaded squares; inside them only BELOW your eyes (it
+                // fills the squares' edges and shows the sea floor through their water) - its coarse ground can be above
+                // you in a dip and was then seen from underneath over your head, moving with you ("a mirror of the ground in
+                // the sky"; like the unticked pipe before). Planes in this snapshot's own space; 4 stays the caller's.
+                const float *B = v->wBRg; float c0 = S->centre[0], c1 = S->centre[1], c2 = S->centre[2];
+                double pl[5][3][4] = { { { -1, 0, 0, B[0] - c0 } }, { { 1, 0, 0, -(B[2] - c0) } },
+                                       { { 1, 0, 0, -(B[0] - c0) }, { -1, 0, 0, B[2] - c0 }, { 0, 0, -1, B[1] - c2 } },
+                                       { { 1, 0, 0, -(B[0] - c0) }, { -1, 0, 0, B[2] - c0 }, { 0, 0, 1, -(B[3] - c2) } },
+                                       { { 0, -1, 0, (v->wpos[1] - c1) - 0.05 } } };
+                int npl[5] = { 1, 1, 3, 3, 1 };
+                for (int q = 0; q < 5; q++) {
+                    // (the last piece is the inside: its x / z bounds from the 4 box planes, 0-3, plus the height plane on 5)
+                    if (q == 4) {
+                        double bx[4][4] = { { 1, 0, 0, -(B[0] - c0) }, { -1, 0, 0, B[2] - c0 }, { 0, 0, 1, -(B[1] - c2) }, { 0, 0, -1, B[3] - c2 } };
+                        for (int k = 0; k < 4; k++) { glClipPlane(GL_CLIP_PLANE0 + k, bx[k]); glEnable(GL_CLIP_PLANE0 + k); }
+                        glClipPlane(GL_CLIP_PLANE5, pl[4][0]); glEnable(GL_CLIP_PLANE5);
+                    } else for (int k = 0; k < npl[q]; k++) { glClipPlane(GL_CLIP_PLANE0 + k, pl[q][k]); glEnable(GL_CLIP_PLANE0 + k); }
+                    glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, vbo ? (const void *)((size_t)R->first * 4) : (const void *)(S->cpuI + R->first));
+                    for (int k = 0; k < 4; k++) glDisable(GL_CLIP_PLANE0 + k);
+                    glDisable(GL_CLIP_PLANE5);
+                }
+            } else
             glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, vbo ? (const void *)((size_t)R->first * 4) : (const void *)(S->cpuI + R->first));
             glDisable(GL_POLYGON_OFFSET_FILL);
             for (int k = 0; k < 4; k++) glDisable(GL_CLIP_PLANE0 + k);
@@ -3355,7 +3530,10 @@ static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
     glPopMatrix();
 }
 // after the current full-detail square: the previous one where the new one hasn't drawn, then the world where neither has
-static const float kWalkDet[11] = { 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64 };   // full-detail square sizes (.tscb units; x250 = game units: 500 .. 16000; the top ones for testing the limits)
+#define V3_NWALKDET 17
+static const float kWalkDet[V3_NWALKDET] = { 2, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64 };   // full-detail square sizes (.tscb units; x250 = game units: 500, then 1000 .. 16000 in steps of 1000)
+static const float kWalkDetOld[11] = { 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64 };   // (save points from before .218 stored a place in this list)
+static int V3WalkDetNearest(float a) { int b = 0; for (int i = 1; i < V3_NWALKDET; i++) if (fabsf(kWalkDet[i] - a) < fabsf(kWalkDet[b] - a)) b = i; return b; }
 static float V3WalkNear(V3 *v);
 static void V3WalkStep(V3 *v);
 static int V3WalkWanted(V3 *v, int out[4][2]);
@@ -3366,9 +3544,21 @@ static void V3WalkDrawSnaps(V3 *v) {
         for (int k = 0; k < n; k++) { int t = V3WalkTileFind(v, w[k][0], w[k][1]); if (t < 0) continue; got++;
             if (w[k][0] < x0) x0 = w[k][0]; if (w[k][0] > x1) x1 = w[k][0]; if (w[k][1] < z0) z0 = w[k][1]; if (w[k][1] > z1) z1 = w[k][1]; }
         v->wBROk = got && got == (x1 - x0 + 1) * (z1 - z0 + 1);
+        float A = kWalkDet[v->wDet], W2 = v->wWorldW[2], W3 = v->wWorldW[3];
         if (v->wBROk) {
-            float A = kWalkDet[v->wDet], W2 = v->wWorldW[2], W3 = v->wWorldW[3];
             v->wBR[0] = x0 * A * W2; v->wBR[1] = z0 * A * W2; v->wBR[2] = fminf((x1 + 1) * A, W3) * W2; v->wBR[3] = fminf((z1 + 1) * A, W3) * W2;
+            memcpy(v->wBRg, v->wBR, sizeof v->wBR); v->wBRgOk = 1;
+        } else {
+            // (squares still loading: the far-off world's ground is still kept out from above your eyes over the square
+            // you stand on, if it's loaded - else it showed overhead in a dip again while the next square loaded)
+            v->wBRgOk = 0;
+            if (A * W2 > 0) {
+                int tx = (int)floorf(v->wpos[0] / (A * W2)), tz = (int)floorf(v->wpos[2] / (A * W2));
+                if (V3WalkTileFind(v, tx, tz) >= 0) {
+                    v->wBRg[0] = tx * A * W2; v->wBRg[1] = tz * A * W2; v->wBRg[2] = fminf((tx + 1) * A, W3) * W2; v->wBRg[3] = fminf((tz + 1) * A, W3) * W2;
+                    v->wBRgOk = 1;
+                }
+            }
         }
     }
     glEnable(GL_DEPTH_TEST); glEnable(GL_LIGHTING); glEnable(GL_LIGHT0); glEnable(GL_COLOR_MATERIAL); glEnable(GL_NORMALIZE);
@@ -3656,8 +3846,8 @@ static void V3WalkSavePath(const V3 *v, wchar_t *out, size_t n, int makeDir) {
 static int V3WalkSave(V3 *v) {
     if (!v->walk) return 0;
     size_t cap = 8192 + (size_t)(v->nkeep + v->nkg + VOX_MAXMAT) * (VOX_MATN + 12), o = 0; char *t = (char *)malloc(cap); if (!t) return 0;
-    o += snprintf(t + o, cap - o, "ns2dig walk 1\npos %.4f %.4f %.4f\nlook %.4f %.4f\ncoll %d\nfly %d\nspeed %g\nheight %g\njump %g\ndet %d\n",
-                  v->wpos[0], v->wpos[1] - v->wEye, v->wpos[2], v->wyaw, v->wpitch, v->wColl, v->wFly, v->wSpeedMul, v->wHeight, v->wJump, v->wDet);
+    o += snprintf(t + o, cap - o, "ns2dig walk 1\npos %.4f %.4f %.4f\nlook %.4f %.4f\ncoll %d\nfly %d\nspeed %g\nheight %g\njump %g\ndetu %g\n",
+                  v->wpos[0], v->wpos[1] - v->wEye, v->wpos[2], v->wyaw, v->wpitch, v->wColl, v->wFly, v->wSpeedMul, v->wHeight, v->wJump, kWalkDet[v->wDet]);
     for (int q = 0; q < v->nkg && o + VOX_MATN + 12 < cap; q++) if (v->kgState[q] == 1 || v->kgState[q] == 2) o += snprintf(t + o, cap - o, "grp %d %s\n", v->kgState[q], v->kgName[q]);
     for (int q = 0; q < v->nkeep && o + VOX_MATN + 12 < cap; q++) o += snprintf(t + o, cap - o, "hide %d %s\n", v->keepHidden[q] ? 1 : 0, v->keepName[q]);
     if (v->partOk) for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT && o + VOX_MATN + 12 < cap; k++) o += snprintf(t + o, cap - o, "hide %d %s\n", v->hidden[k] ? 1 : 0, v->part.matName[k]);
@@ -3763,7 +3953,9 @@ static void V3WalkStart(V3 *v) {
         if ((q = strstr(sv, "\nheight ")) && sscanf(q + 8, "%f", &ht) == 1 && ht >= 1 && ht <= 10) { v->wHeight = ht; v->wEye = ht * 0.93f; eye = v->wEye; }
         if ((q = strstr(sv, "\njump ")) && sscanf(q + 6, "%f", &jp) == 1 && jp >= 0.25f && jp <= 5) v->wJump = jp;
         if ((q = strstr(sv, "\nspeed ")) && sscanf(q + 7, "%f", &sp) == 1 && sp >= 1 && sp <= 100) v->wSpeedMul = roundf(sp);
-        if ((q = strstr(sv, "\ndet ")) && sscanf(q + 5, "%d", &dt) == 1 && dt >= 0 && dt <= 10) { v->wDet = dt; SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, dt); }
+        float du;
+        if ((q = strstr(sv, "\ndetu ")) && sscanf(q + 6, "%f", &du) == 1 && du > 0) { v->wDet = V3WalkDetNearest(du); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, v->wDet); }
+        else if ((q = strstr(sv, "\ndet ")) && sscanf(q + 5, "%d", &dt) == 1 && dt >= 0 && dt <= 10) { v->wDet = V3WalkDetNearest(kWalkDetOld[dt]); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, v->wDet); }
         if ((q = strstr(sv, "\ncoll ")) && sscanf(q + 6, "%d", &c) == 1) v->wColl = c ? 1 : 0;
         if ((q = strstr(sv, "\nfly ")) && sscanf(q + 5, "%d", &fl) == 1) v->wFly = fl ? 1 : 0;
         if ((q = strstr(sv, "\nlook ")) && sscanf(q + 6, "%f %f", &yw, &pt) == 2 && isfinite(yw) && isfinite(pt)) { v->wyaw = yw; v->wpitch = pt; }
@@ -5161,6 +5353,36 @@ static void V3ListObjectsNear(V3 *v, float wx, float wz) {
         FindClose(fh);
     } while (FindNextFileW(dh, &dd));
     if (dh != INVALID_HANDLE_VALUE) FindClose(dh);
+    {   // the foliage (Foliage\<scene>\FoliageInstance.byml: trees, bushes, grass...; see V3GatherActors)
+        wchar_t bf[2][200]; V3BancFolders(v, bf); const wchar_t *sc = !wcsncmp(bf[0], L"World_", 6) ? bf[0] + 6 : bf[0];
+        wchar_t fp[2300]; swprintf(fp, 2300, L"%ls\\Foliage\\%ls\\FoliageInstance.byml", root, sc);
+        size_t zn; unsigned char *z = VoxReadFile(fp, &zn);
+        if (!z) { swprintf(fp, 2300, L"%ls\\Foliage\\%ls\\FoliageInstance.byml.zs", root, sc); z = VoxReadFile(fp, &zn); }
+        size_t bn = 0; unsigned char *b = z ? VoxUnzstd(z, zn, &bn) : NULL; free(z);
+        if (b) {
+            files++;
+            Byml y; BymlNode r = BymlOpen(&y, b, bn);
+            for (int i = 0; i < BymlCount(&y, r); i++) {
+                BymlNode a = BymlAt(&y, r, i);
+                const char *nm = BymlStr(&y, BymlGet(&y, a, "actor_name")); if (!nm) continue;
+                BymlNode t = BymlGet(&y, a, "pos");
+                float x = BymlFloat(BymlAt(&y, t, 0), 0), yy = BymlFloat(BymlAt(&y, t, 1), 0), zz = BymlFloat(BymlAt(&y, t, 2), 0);
+                float d = sqrtf((x - wx) * (x - wx) + (zz - wz) * (zz - wz)); if (d > 200) continue;
+                if (n == cap) { Hit *nh = (Hit *)realloc(h, (size_t)cap * 2 * sizeof(Hit)); if (!nh) break; h = nh; cap *= 2; }
+                Hit *o = h + n++; o->d = d; o->x = x; o->y = yy; o->z = zz; snprintf(o->name, sizeof o->name, "%s", nm);
+                o->prim[0] = 0; o->extra[0] = 0;
+                swprintf(o->file, 96, L"Foliage\\%ls", sc);
+                V3Name *e = V3NameGet(v, nm, 0);
+                if (x < bx0 || x > bx1 || zz < bz0 || zz > bz1) snprintf(o->kind, sizeof o->kind, "[outside this area]");
+                else if (e && e->ent[0]) snprintf(o->kind, sizeof o->kind, "[drawn: %s]", e->ent);
+                else if (e && e->why[0]) snprintf(o->kind, sizeof o->kind, "[not drawn: %s]", e->why);
+                else snprintf(o->kind, sizeof o->kind, "[not drawn: not handled by the view]");
+                wchar_t mp[2400]; o->model = V3ModelPath(v, root, nm, 0, mp, 2400);
+                swprintf(o->mpath, 300, L"%ls", o->model ? mp : L"");
+            }
+            free(b);
+        }
+    }
     for (int c = 0; c < v->ncpt; c++) {                     // collectibles inside an island whose way in is near here
         const struct V3CPt *q = &v->cpt[c]; if (!q->island[0]) continue;
         float d = sqrtf((q->T[0] - wx) * (q->T[0] - wx) + (q->T[2] - wz) * (q->T[2] - wz)); if (d > 200) continue;
@@ -6063,12 +6285,12 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ShowWindow(v->lmCb, SW_HIDE); SendMessageW(v->lmCb, BM_SETCHECK, BST_CHECKED, 0);
         v->propCb = V3Ctl(v, L"BUTTON", L"Show props (coins, item boxes, lights, cars, signs...)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_PROPS);
         v->walkCb = V3Ctl(v, L"BUTTON", L"Walk the world (first person: click the view, WASD, Esc)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_WALK);
-        ShowWindow(v->walkCb, SW_HIDE); v->wSpeedMul = 10; v->wDet = 2;
+        ShowWindow(v->walkCb, SW_HIDE); v->wSpeedMul = 10; v->wDet = 1;
         v->collCb = V3Ctl(v, L"BUTTON", L"Collisions (C): walk with gravity, Space twice = fly", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_WCOLL);
         ShowWindow(v->collCb, SW_HIDE);
         v->wDetLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WDETLBL);
         v->wDetSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WDET);
-        SendMessageW(v->wDetSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 10)); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, 2);
+        SendMessageW(v->wDetSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, V3_NWALKDET - 1)); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, 1);
         ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE);
         v->wHgtLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WHGTLBL);
         v->wHgtSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WHGT);
@@ -6384,7 +6606,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             V3WalkSetHeight(v, 1 + pos * 0.5f); V3WalkInfo(v); InvalidateRect(v->gl, NULL, FALSE); return 0;
         }
         if ((HWND)lp == v->wDetSl) {                       // walking: the full-detail square's size (applied when the slider stops)
-            int pos = (int)SendMessageW(v->wDetSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > 10) pos = 10;
+            int pos = (int)SendMessageW(v->wDetSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > V3_NWALKDET - 1) pos = V3_NWALKDET - 1;
             int old = v->wDet; v->wDet = pos; V3WalkDetLabel(v);
             if (LOWORD(wp) != TB_THUMBTRACK && pos != old && v->walk) {      // another tile size: all tiles again
                 V3WalkTilesFree(v); if (v->haveMesh) V3FreeGLMesh(v);

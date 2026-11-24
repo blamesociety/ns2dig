@@ -4970,6 +4970,75 @@ def identify_nssr(label, blob, ext, name):
     return None
 
 
+_NACP_LANGS = ["American English", "British English", "Japanese", "French", "German", "Latin American Spanish", "Spanish",
+               "Italian", "Dutch", "Canadian French", "Portuguese", "Russian", "Korean", "Traditional Chinese",
+               "Simplified Chinese", "Brazilian Portuguese", "Polish", "Thai"]
+
+
+def read_nacp(b):
+    """control.nacp: the game's details shown by the console (names, publisher, version, IDs, settings)."""
+    import struct
+    def cstr(o, n):
+        return b[o:o + n].split(b"\0", 1)[0].decode("utf-8", "replace")
+    titles = {}
+    for i in range(16):
+        nm, pub = cstr(i * 0x300, 0x200), cstr(i * 0x300 + 0x200, 0x100)
+        if nm or pub:
+            titles[_NACP_LANGS[i]] = {"name": nm, "publisher": pub} if pub else {"name": nm}
+    names = set(t["name"] for t in titles.values())
+    langs = struct.unpack_from("<I", b, 0x302C)[0]
+    u64 = lambda o: "%016X" % struct.unpack_from("<Q", b, o)[0]
+    r = {"_binary_format": "Game details (NACP)",
+         "_note": "The game's details the console shows: its name and publisher in each language, version and ID numbers. "
+                  "Laid out like a Switch 1 control.nacp; settings past the ones named here are listed as raw bytes.",
+         "name": names.pop() if len(names) == 1 else None,
+         "version": cstr(0x3060, 0x10),
+         "titles by language": titles,
+         "languages the game supports": [_NACP_LANGS[i] for i in range(len(_NACP_LANGS)) if langs >> i & 1],
+         "game ID (presence group)": u64(0x3038),
+         "save data owner ID": u64(0x3078),
+         "add-on content base ID": u64(0x3070),
+         "needs a user account at start": {0: "no", 1: "yes", 2: "yes (with a Nintendo Account)"}.get(b[0x3025], b[0x3025]),
+         }
+    if r["name"] is None: del r["name"]
+    known = set(range(0x3025, 0x3026)) | set(range(0x302C, 0x3030)) | set(range(0x3038, 0x3040)) \
+        | set(range(0x3060, 0x3070)) | set(range(0x3070, 0x3080))
+    other, o = {}, 0x3000
+    while o < len(b):
+        if b[o] and o not in known:
+            e = o
+            while e < len(b) and b[e] and e not in known: e += 1
+            other["0x%04X" % o] = b[o:e].hex(" "); o = e
+        else:
+            o += 1
+    if other: r["other settings (raw bytes, by position)"] = other
+    return r
+
+
+def read_picture(b, name):
+    """A plain JPEG / PNG picture (MKW control\\icon_<language>.dat = the HOME Menu icon for one language)."""
+    import struct
+    w = h = None
+    if b[:8] == b"\x89PNG\r\n\x1a\n":
+        kind, (w, h) = "PNG", struct.unpack_from(">II", b, 16)
+    else:
+        kind, o = "JPEG", 2
+        while o + 9 < len(b):
+            if b[o] != 0xFF: o += 1; continue
+            m = b[o + 1]
+            if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7 or m == 0xFF: o += 1 if m == 0xFF else 2; continue
+            ln = struct.unpack_from(">H", b, o + 2)[0]
+            if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h, w = struct.unpack_from(">HH", b, o + 5); break
+            o += 2 + ln
+    r = {"_binary_format": "%s picture" % kind, "width": w, "height": h,
+         "_note": "Select this file and click \"Textures\" to see it and save it as PNG."}
+    m = re.match(r"icon_(.+)\.dat$", name, re.I)
+    if m:
+        r["what it is"] = "The game's HOME Menu icon for " + re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m.group(1))
+    return r
+
+
 def identify_special(label, blob, head):
     """-> JSON dict for formats recognised by name and contents, or None"""
     ext = _ext(label)
@@ -5010,6 +5079,10 @@ def identify_special(label, blob, head):
                 return r
         if blob is not None and name.endswith("_tbl.bin") and blob[:2] == b"\x20\x00":
             return read_char_table(blob)
+        if blob is not None and ext == "nacp" and len(blob) == 0x4000:
+            return read_nacp(blob)
+        if blob is not None and (blob[:3] == b"\xff\xd8\xff" or blob[:8] == b"\x89PNG\r\n\x1a\n"):
+            return read_picture(blob, label.rsplit("/", 1)[-1])
     except Exception as e:
         tag = blob[:4].decode("latin-1") if blob else ""
         if not re.fullmatch(r"[A-Za-z0-9 _]{4}", tag): tag = (ext or "file") + " file"   # (raw bytes in a name break the log)

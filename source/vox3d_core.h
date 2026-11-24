@@ -875,6 +875,27 @@ static void BfStr(const unsigned char *b, size_t n, uint64_t at, char *out, int 
     if (l > outN - 1) l = outN - 1;
     memcpy(out, b + p + 2, l); out[l] = 0;
 }
+// a material's shader option (BFRES 10, MKW): FMAT +0x10 shader info -> +0 shader assign (+0x40: option name dict);
+// shader info +0x46 = number of on / off options (they come first), +0x30 = the other options' value strings.
+// The value as text ("true" / "false" for on / off options), "" if it isn't there.
+static void BfMatOption(const unsigned char *b, size_t n, size_t mt, const char *key, char *out, int outN) {
+    out[0] = 0;
+    if (mt + 0x18 > n) return;
+    uint64_t si = BfU64(b + mt + 0x10); if (!si || si + 0x50 > n) return;
+    uint64_t sa = BfU64(b + si); if (!sa || sa + 0x48 > n) return;
+    uint64_t d = BfU64(b + sa + 0x40); if (!d || d + 8 > n) return;
+    uint32_t cnt = VoxRd32(b + d + 4); unsigned nb = VoxRd16(b + si + 0x46); uint64_t bits = BfU64(b + si + 0x28), vals = BfU64(b + si + 0x30);
+    if (cnt > 4096 || nb > cnt) return;
+    size_t kl = strlen(key);
+    for (uint32_t i = 0; i < cnt; i++) {
+        size_t node = d + 8 + 16 * (size_t)(i + 1); if (node + 16 > n) return;
+        uint64_t sp = BfU64(b + node + 8); if (!sp || sp + 2 + kl > n) continue;
+        if (VoxRd16(b + sp) != kl || memcmp(b + sp + 2, key, kl)) continue;
+        if (i < nb) { if (bits && bits + i / 8 < n) snprintf(out, outN, "%s", (b[bits + i / 8] >> (i % 8)) & 1 ? "true" : "false"); return; }
+        if (vals) BfStr(b, n, vals + 8 * (size_t)(i - nb), out, outN);
+        return;
+    }
+}
 // one attribute value -> up to 4 floats; returns component count (0 = format not handled)
 static int BfAttr(const unsigned char *b, size_t n, size_t at, unsigned fmt, float *o) {
     unsigned lay = fmt & 0xFF, typ = fmt >> 8;
@@ -1020,22 +1041,61 @@ static int VoxLoadBfres(VoxPart *p, const VOXCHAR *path) {
                 q = (q + align - 1) / align * align;
                 bufOff[k] = q; stride[k] = VoxRd32(b + stA + k * 16); q += VoxRd32(b + szA + k * 16);
             }
+            // a material whose second colour texture (_a1) is what shows (drive_enable_multi_albedo, calc type 1 - MKW's
+            // AppleFS000: _a0 is a dark grain, the red / yellow apple is _a1) uses that texture and its own texture
+            // coordinates (texcoord1 = _u<drive_texcoord1_input>, e.g. _u2) instead of _a0 on _u0
+            char uvName[8] = "_u0"; int useA1 = 0;
+            {   int mie = VoxRd16(b + so + 0x52); uint64_t mae = BfU64(b + mo + 0x38); size_t mte = mae + (size_t)mie * 0xB0;
+                if (mae && mie < VoxRd16(b + mo + 0x6C) && mte + 0xB0 <= n) {
+                    char on[16], ct[16], ti[16];
+                    BfMatOption(b, n, mte, "drive_enable_multi_albedo", on, sizeof on);
+                    BfMatOption(b, n, mte, "drive_multi_albedo_calc_type", ct, sizeof ct);
+                    BfMatOption(b, n, mte, "drive_texcoord1_input", ti, sizeof ti);
+                    // ... but not when _a1 is a blend tint (the ice cliffs' CmnTex_CliffIC_Wall_IceBlend_Alb: most ice cliffs
+                    // were pink in .209-.213). Other shared textures do show (Ice Cream island's CmnTex_Stage_IceBuildings_...:
+                    // _a0 is a plain grain, Face_00, the colours are _a1 - dark in .214)
+                    char a1n[128] = "";
+                    {   int nt = b[mte + 0xA3]; uint64_t tn = BfU64(b + mte + 0x20), sd = BfU64(b + mte + 0x38);
+                        for (int k = 0; k < nt && tn && sd && sd + 8 + (size_t)(k + 2) * 16 <= n; k++) {
+                            char smp[16]; BfStr(b, n, sd + 8 + (size_t)(k + 1) * 16 + 8, smp, sizeof smp);
+                            if (!strcmp(smp, "_a1")) { BfStr(b, n, tn + (size_t)k * 8, a1n, sizeof a1n); break; }
+                        }
+                    }
+                    if (!strcmp(on, "true") && !strcmp(ct, "1") && a1n[0] && !strstr(a1n, "Blend")) {
+                        useA1 = 1;
+                        if (ti[0] >= '0' && ti[0] <= '9' && !ti[1]) { uvName[2] = ti[0]; }
+                    }
+                }
+            }
             int aP = -1, aN = -1, aI = -1, aU = -1, aI1 = -1, aW0 = -1, aW1 = -1; unsigned fP = 0, fN = 0, fI = 0, fU = 0, fI1 = 0, fW0 = 0, fW1 = 0;
             size_t oP = 0, oN = 0, oI = 0, oU = 0, oI1 = 0, oW0 = 0, oW1 = 0;
+            int aU0 = -1; unsigned fU0 = 0; size_t oU0 = 0;          // (_u0 too: to fall back to when _a1 is only a tint)
             for (int k = 0; k < na; k++) {
                 size_t ao = aArr + (size_t)k * 16; if (ao + 16 > n) break;
                 char an[16]; BfStr(b, n, ao, an, sizeof an);
                 unsigned fmt = (b[ao + 8] << 8) | b[ao + 9]; int bufi = b[ao + 0x0E]; if (bufi >= nbuf || bufi >= 16) continue;
                 size_t off = bufOff[bufi] + VoxRd16(b + ao + 0x0C);
+                if (!strcmp(an, "_u0")) { aU0 = bufi; fU0 = fmt; oU0 = off; }
                 if (!strcmp(an, "_p0")) { aP = bufi; fP = fmt; oP = off; }
                 else if (!strcmp(an, "_n0")) { aN = bufi; fN = fmt; oN = off; }
                 else if (!strcmp(an, "_i0")) { aI = bufi; fI = fmt; oI = off; }
-                else if (!strcmp(an, "_u0")) { aU = bufi; fU = fmt; oU = off; }
+                else if (!strcmp(an, uvName)) { aU = bufi; fU = fmt; oU = off; }
                 else if (!strcmp(an, "_i1")) { aI1 = bufi; fI1 = fmt; oI1 = off; }
                 else if (!strcmp(an, "_w0")) { aW0 = bufi; fW0 = fmt; oW0 = off; }
                 else if (!strcmp(an, "_w1")) { aW1 = bufi; fW1 = fmt; oW1 = off; }
             }
             if (aP < 0) continue;
+            // (no texcoord1 in this shape: _a0 on _u0)
+            if (useA1 && aU < 0) { useA1 = 0; aU = aU0; fU = fU0; oU = oU0; }
+            // _a1 repeated many times over the shape is a small detail pattern laid over _a0, not the colour (MKW's Big
+            // Tree jump leaves: JumpLeafAddAlb on _u2 spanning 28 x 37 - the leaf showed a tiled scale pattern; _a0 on _u0
+            // covers the leaf once). The colour _a1s span about 0-1.2 (apple, Ice Cream island); DK Pass's walls up to ~10.
+            if (useA1 && aU >= 0) {
+                float lo[2] = { 1e30f, 1e30f }, hi[2] = { -1e30f, -1e30f };
+                for (uint32_t i = 0; i < nv; i++) { float U4[4]; if (!BfAttr(b, n, oU + i * stride[aU], fU, U4)) break;
+                    for (int q = 0; q < 2; q++) { if (U4[q] < lo[q]) lo[q] = U4[q]; if (U4[q] > hi[q]) hi[q] = U4[q]; } }
+                if (hi[0] - lo[0] > 16.0f || hi[1] - lo[1] > 16.0f) { useA1 = 0; aU = aU0; fU = fU0; oU = oU0; }
+            }
             size_t v0 = cv;
             for (uint32_t i = 0; i < nv && cv < capV; i++, cv++) {
                 float P4[4], N4[4] = { 0, 1, 0, 0 }, I4[4] = { 0 };
@@ -1121,11 +1181,55 @@ static int VoxLoadBfres(VoxPart *p, const VOXCHAR *path) {
                     int nt = b[mt + 0xA3]; uint64_t tn = BfU64(b + mt + 0x20), sd = BfU64(b + mt + 0x38);
                     for (int k = 0; k < nt && tn && sd && sd + 8 + (size_t)(k + 2) * 16 <= n; k++) {
                         char smp[16]; BfStr(b, n, sd + 8 + (size_t)(k + 1) * 16 + 8, smp, sizeof smp);
-                        if (!strcmp(smp, "_a0")) BfStr(b, n, tn + (size_t)k * 8, p->texAlb[id], 128);
+                        if (!strcmp(smp, useA1 ? "_a1" : "_a0")) BfStr(b, n, tn + (size_t)k * 8, p->texAlb[id], 128);
                         else if (!strcmp(smp, "_o0")) BfStr(b, n, tn + (size_t)k * 8, p->texOpc[id], 128);
                         else if (!strcmp(smp, "_e0")) BfStr(b, n, tn + (size_t)k * 8, p->texEmm[id], 128);
+                        else if (!strcmp(smp, "_msk0")) {
+                            // the mask cuts the shape when the material takes its see-through from it (drive_alpha_color 4;
+                            // e.g. the far-off suspension bridge's cable cards, the coaster net wire) - used like an opacity map
+                            char ac[16]; BfMatOption(b, n, mt, "drive_alpha_color", ac, sizeof ac);
+                            if (!strcmp(ac, "4") && !p->texOpc[id][0]) BfStr(b, n, tn + (size_t)k * 8, p->texOpc[id], 128);
+                        }
                         else { char tnm[128]; BfStr(b, n, tn + (size_t)k * 8, tnm, 128); if (strstr(tnm, "EmmMix")) snprintf(p->texMix[id], 128, "%s", tnm); }
                     }
+                    if (useA1) {
+                        // _a1 is the colour only when it isn't darker than _a0: "a1~a0" - the viewer reads both and keeps the
+                        // brighter (MKW's apple: red AppleBody_03 over a dark grain; Ice Cream island: colours over a grain
+                        // Face_00) - a dark _a1 is a pattern blended on top (DK Pass: SnowLine_00, near-black lines over
+                        // the snow - the roads were black in .209-.215; SnowGradation_00 over the metal roof)
+                        char a0n[128] = "";
+                        for (int k = 0; k < nt && tn && sd && sd + 8 + (size_t)(k + 2) * 16 <= n; k++) {
+                            char smp[16]; BfStr(b, n, sd + 8 + (size_t)(k + 1) * 16 + 8, smp, sizeof smp);
+                            if (!strcmp(smp, "_a0")) BfStr(b, n, tn + (size_t)k * 8, a0n, sizeof a0n);
+                        }
+                        if (!p->texAlb[id][0]) snprintf(p->texAlb[id], 128, "%s", a0n);         // (no _a1 after all: its _a0)
+                        else if (a0n[0] && strlen(p->texAlb[id]) + strlen(a0n) + 2 <= 128) {
+                            char a1n2[128]; snprintf(a1n2, sizeof a1n2, "%s", p->texAlb[id]);
+                            snprintf(p->texAlb[id], 128, "%s~%s", a1n2, a0n);
+                        }
+                    }
+                    // no colour texture and drive_albedo_color 900 (MKW: the colour is black - Boo Cinema's film world: the
+                    // castle walls, the cloud sky): its glow texture is what shows (the clouds), else draw it near-black
+                    if (!p->texAlb[id][0]) {
+                        char ac[16]; BfMatOption(b, n, mt, "drive_albedo_color", ac, sizeof ac);
+                        // (not water - e.g. the Aurora track's Mt_Water: drawn with the viewer's water look, as before .208, not
+                        // its aurora glow stripes)
+                        if (!strcmp(ac, "900") && !strstr(p->matName[id], "Water")) {
+                            // a strong glow (drive_emission_scale other than the usual 110 - MKW's boost arches
+                            // AccelRing001: 202, white-cyan lightning in the game; their glow texture is a mid grey-teal):
+                            // drawn brightened, "*Glow:<emission>"
+                            char es[16]; BfMatOption(b, n, mt, "drive_emission_scale", es, sizeof es);
+                            if (p->texEmm[id][0] && es[0] && strcmp(es, "110")) snprintf(p->texAlb[id], 128, "*Glow:%s", p->texEmm[id]);
+                            else snprintf(p->texAlb[id], 128, "%s", p->texEmm[id][0] ? p->texEmm[id] : "*Dark");
+                        }
+                    }
+                    // the Aurora track's road (CmnObj_SpecialSurfaceAurora000: Mt_Water, no colour texture, its glow is
+                    // CmnTex_Special_AuroraRiver_Emm - a dark band with cyan edges): bright cyan water with the glow on top,
+                    // as in the game ("*Aurora:<glow>"; .208-.212 drew the glow alone - stripes; .213-.217 the plain water look)
+                    if (!p->texAlb[id][0] && strstr(p->matName[id], "Water") && !strcmp(p->texEmm[id], "CmnTex_Special_AuroraRiver_Emm"))
+                        // (with the speckled glow of the water below it, CmnTex_Special_AuroraRiver_UnderWater_Emm - the
+                        // road is see-through in the game; its own band glow gave stripes all along the road in .218)
+                        snprintf(p->texAlb[id], 128, "*Aurora:CmnTex_Special_AuroraRiver_UnderWater_Emm");
                 }
                 p->partBone[id] = (short)(W && bone < nb && mi == 0 && nModels == 1 ? bone : -1);
                 // parts on a hidden bone (alternative eyelids, mouths...) start hidden, as in the game

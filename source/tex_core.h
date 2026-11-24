@@ -51,6 +51,17 @@ static int TexFormat(uint32_t fmt, TexFmt *f) {
 
 static int TexOpen(TexFile *tf, const unsigned char *b, size_t n) {
     memset(tf, 0, sizeof *tf);
+    if (n >= 16 && !memcmp(b, "NSDIGIMG", 8)) {          // a picture already decoded to RGBA (JPEG / PNG): "NSDIGIMG", w, h, pixels
+        int w = (int)TexRd32(b + 8), h = (int)TexRd32(b + 12);
+        if (w > 0 && h > 0 && w <= 16384 && h <= 16384 && (size_t)w * h * 4 + 16 <= n) {
+            tf->t = (TexInfo *)calloc(1, sizeof(TexInfo)); if (!tf->t) return 0;
+            TexInfo *t = &tf->t[0];
+            snprintf(t->name, sizeof t->name, "picture (%dx%d)", w, h);
+            t->fmt = 0x0b01; t->w = w; t->h = h; t->depth = t->layers = t->mips = 1; t->tile = 1;
+            t->size = (uint32_t)((size_t)w * h * 4); t->data = 16; t->chan[0] = 2; t->chan[1] = 3; t->chan[2] = 4; t->chan[3] = 5;
+            tf->n = 1; return 1;
+        }
+    }
     if (n >= 64 && memcmp(b, "BNTX", 4)) {               // raw square RGBA8 image (agl's arrow.raw: the 32x32 mouse pointer)
         int s = 1; while ((size_t)s * s * 4 < n && s < 4096) s++;
         if ((size_t)s * s * 4 == n) {

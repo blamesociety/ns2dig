@@ -13,6 +13,43 @@ void UiSkinWindow(HWND top);
 #include <stdint.h>
 #include <wchar.h>
 #include "tex_core.h"
+#define COBJMACROS
+#include <objbase.h>
+#include <wincodec.h>
+
+// JPEG / PNG (e.g. Mario Kart World control\icon_<language>.dat) -> "NSDIGIMG" + width + height + RGBA, using
+// Windows' own picture decoder (WIC). NULL if it can't be decoded.
+static const GUID kClsWicFactory = { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+static const GUID kIidWicFactory = { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+static const GUID kWicRGBA32 = { 0xf5c7ad2d, 0x6a8d, 0x43dd, { 0xa7, 0xa8, 0xa2, 0x99, 0x35, 0x26, 0x1a, 0xe9 } };
+static unsigned char *TvPictureToImg(const unsigned char *b, size_t n, size_t *outN, char *err, size_t errn) {
+    HRESULT ci = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    IWICImagingFactory *f = NULL; IWICStream *st = NULL; IWICBitmapDecoder *dec = NULL; IWICBitmapFrameDecode *fr = NULL;
+    IWICFormatConverter *cv = NULL; unsigned char *out = NULL; UINT w = 0, h = 0;
+    if (FAILED(CoCreateInstance(&kClsWicFactory, NULL, CLSCTX_INPROC_SERVER, &kIidWicFactory, (void **)&f))) goto done;
+    if (FAILED(IWICImagingFactory_CreateStream(f, &st))) goto done;
+    if (FAILED(IWICStream_InitializeFromMemory(st, (BYTE *)b, (DWORD)n))) goto done;
+    if (FAILED(IWICImagingFactory_CreateDecoderFromStream(f, (IStream *)st, NULL, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
+    if (FAILED(IWICBitmapDecoder_GetFrame(dec, 0, &fr))) goto done;
+    if (FAILED(IWICImagingFactory_CreateFormatConverter(f, &cv))) goto done;
+    if (FAILED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource *)fr, &kWicRGBA32, WICBitmapDitherTypeNone, NULL, 0, WICBitmapPaletteTypeCustom))) goto done;
+    if (FAILED(IWICFormatConverter_GetSize(cv, &w, &h)) || !w || !h || w > 16384 || h > 16384) goto done;
+    out = (unsigned char *)malloc(16 + (size_t)w * h * 4);
+    if (!out) goto done;
+    memcpy(out, "NSDIGIMG", 8);
+    for (int i = 0; i < 4; i++) { out[8 + i] = (unsigned char)(w >> (8 * i)); out[12 + i] = (unsigned char)(h >> (8 * i)); }
+    if (FAILED(IWICFormatConverter_CopyPixels(cv, NULL, w * 4, w * h * 4, out + 16))) { free(out); out = NULL; goto done; }
+    *outN = 16 + (size_t)w * h * 4;
+done:
+    if (cv) IWICFormatConverter_Release(cv);
+    if (fr) IWICBitmapFrameDecode_Release(fr);
+    if (dec) IWICBitmapDecoder_Release(dec);
+    if (st) IWICStream_Release(st);
+    if (f) IWICImagingFactory_Release(f);
+    if (SUCCEEDED(ci)) CoUninitialize();
+    if (!out) snprintf(err, errn, "This picture couldn't be decoded.");
+    return out;
+}
 
 static void *xalloc(size_t n) { return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, n); }
 static void xfree(void *p) { if (p) HeapFree(GetProcessHeap(), 0, p); }
@@ -72,6 +109,14 @@ static unsigned char *TvLoadBytes(const wchar_t *path, const char *inner, size_t
         if (!img) { snprintf(err, errn, "%s", e2); return NULL; }
         if (!tdesc[0]) snprintf(tdesc, tdn, "debug font");
         b = img; n = (size_t)side * side * 4;
+    }
+    if (n > 8 && (!memcmp(b, "\xff\xd8\xff", 3) || !memcmp(b, "\x89PNG\r\n\x1a\n", 8))) {   // JPEG / PNG picture
+        size_t pn = 0; char e2[200] = "";
+        unsigned char *img = TvPictureToImg(b, n, &pn, e2, sizeof e2);
+        snprintf(tdesc, tdn, "%s picture", b[0] == 0xff ? "JPEG" : "PNG");
+        free(b);
+        if (!img) { snprintf(err, errn, "%s", e2); return NULL; }
+        b = img; n = pn;
     }
     if (n > 0x20 && !memcmp(b, "FRES", 4)) {       // a BFRES with its textures inside (Env\*.genvres): use the embedded BNTX
         size_t o = 0x10; while (o + 8 <= n && memcmp(b + o, "BNTX\0\0\0\0", 8)) o += 4;

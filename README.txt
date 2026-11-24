@@ -615,9 +615,19 @@ VOXEL TERRAIN
     first, 1x a notch, 1x to 100x); Esc lets the mouse go. Where you are shows under Show all / Hide all.
     Around you the world loads in full detail (everything the "Open this area in full detail" view shows: scenery,
     placed objects, collectibles, water) and the rest of the world stays at low detail. As you move, the next square
-    loads in the background (the old one stays shown meanwhile). "Full detail around you" sets the square's size:
-    bigger looks further but takes longer to load and uses more memory. The list on the right shows the square's
+    loads in the background (the old one stays shown meanwhile). "Full detail around you" sets the square's size
+    (500 x 500, then 1000 x 1000 to 16000 x 16000 in steps of 1000; 1000 at first): bigger looks further but takes
+    longer to load and uses more memory. The list on the right shows the square's
     parts; untick any to hide them. Unticking "Walk the world" goes back to the whole map (it loads again).
+    Graphics memory for textures: the info box's "Textures:" line (e.g. "Textures: 3,812, ~650 MB GPU") shows how
+    many the view holds and about how much graphics-card memory they take. It depends on how many different textures are in view, not on the area - the
+    world reuses the same ones (coins, item boxes, trees, snow), so it climbs fast at first, then levels off.
+    Measured on Mario Kart World 1.8.0 with the default ticks:
+      16000 x 16000 (the whole Game03 map): 6,250 textures, about 1.1 GB - the most any setting needs
+      Smaller areas need less.
+    The view holds up to 16,384 textures (about 2.6 times the whole map). If that ever fills, the line says how
+    many didn't fit (those are drawn without their texture). Walking keeps textures it has passed so going back
+    is quick, and lets go of unused ones when the table is three-quarters full.
     "Collisions (C)" (on at first; C turns it on / off): what's drawn near you is solid - you walk with gravity, Space
     jumps ("Jump height" sets how high), Ctrl runs, you slide along walls, step up kerbs and fall off ledges. Space twice quickly flies (Space / Shift
     up / down); flying down onto the ground lands, Space twice in the air drops you. Water isn't solid (you walk on

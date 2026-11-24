@@ -9,7 +9,9 @@ dump and it turns every game file into readable JSON, then lets you browse, sear
     Full detail streams in around you while the rest stays at low detail. Collisions let you walk with
     gravity, jump, climb stairs and ramps and slide along walls; press Space twice to fly, or C to fly
     through everything. Sliders set the walking speed (also the mouse wheel), player height, jump height
-    and how far full detail reaches.
+    and how far full detail reaches (500 × 500 up to 16000 × 16000, the whole Mario Kart World map).
+    The info box shows how many textures are loaded and roughly how much graphics memory they use –
+    the whole map needs about 6,250 textures and 1.1 GB.
 - **Texture viewer** – BNTX textures in BC, ASTC and plain formats, with mipmaps, arrays and cube maps
 - **Layout viewer** – UI screens and their animations, with translated text and fonts
 - **Font viewer**, **Lighting viewer**, **Event viewer** (flowcharts and cutscene timelines)

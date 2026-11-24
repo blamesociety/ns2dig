@@ -116,6 +116,8 @@ static void OpenVox3D(const wchar_t *outDir);
 static void UpdateVox3DButton(void);
 static void UpdateBmStar(void);
 static void ScanLogPath(const wchar_t *scanDir, wchar_t *out, size_t n);
+static void ShowScanLog(void);
+static BOOL SelectScanName(const wchar_t *name);
 static void ScanNameOf(const wchar_t *scanRoot, wchar_t *out, size_t n);
 static DWORD g_extractStart;
 static HANDLE g_job;                     // job object holding Python (and the py launcher's child)
@@ -1243,11 +1245,11 @@ static void ShowDirTree(HTREEITEM it) {
     HdrSet(dir, TRUE, NULL, NULL);
 }
 
-static void LoadTree(BOOL quiet) {
+static BOOL LoadTree(BOOL quiet) {
     wchar_t name[PATHBUF], full[PATHBUF];
     GetText(g_out, name, PATHBUF);
     const wchar_t *err = CheckScanName(name);
-    if (err) { if (quiet) SetStatus(err); else MessageBoxW(g_wnd, err, L"ns2dig", MB_ICONWARNING); return; }
+    if (err) { if (quiet) SetStatus(err); else MessageBoxW(g_wnd, err, L"ns2dig", MB_ICONWARNING); return FALSE; }
     SetWindowTextW(g_out, name);
     ScanDir(name, full, PATHBUF);
     DWORD at = GetFileAttributesW(full);
@@ -1256,12 +1258,12 @@ static void LoadTree(BOOL quiet) {
             wchar_t m[PATHBUF + 96];
             swprintf(m, PATHBUF + 96, L"New scan \"%ls\" - choose the folder to extract and click Extract.", name);
             SetStatus(m);
-            return;
+            return FALSE;
         }
         wchar_t m[PATHBUF + 128];
         swprintf(m, PATHBUF + 128, L"There is no scan called \"%ls\" yet.\n\nChoose a RomFS folder and click Extract to create it.", name);
         MessageBoxW(g_wnd, m, L"ns2dig", MB_ICONINFORMATION);
-        return;
+        return FALSE;
     }
     swprintf(g_root, PATHBUF, L"%ls", full);
     const char *prevStage = g_stage;
@@ -1283,6 +1285,19 @@ static void LoadTree(BOOL quiet) {
     UpdateScanLogButton();
     SaveSettings();
     g_stage = prevStage;
+    return TRUE;
+}
+// a different scan was chosen (scan name drop-down, Enter / Open, or its game folder): open it and show its scan log
+// in the reader instead of the file that was open in the previous scan
+static void OpenScanShowLog(BOOL quiet) {
+    if (!LoadTree(quiet)) return;
+    wchar_t p[PATHBUF]; ScanLogPath(g_root, p, PATHBUF);
+    if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) ShowScanLog();
+    else {
+        SetWindowTextW(g_view, L"(this scan has no scan log - it was made before scan logs were saved)");
+        UiSetViewJson(FALSE);
+        SetWindowTextW(g_viewlbl, L"Click a file in the tree to view it.");
+    }
 }
 
 // select the tree item for a full file path, expanding folders on the way
@@ -1902,7 +1917,10 @@ static const wchar_t *TypeDesc(const wchar_t *t) {
         { L"bkprmb", L"Baked light probes: a scene's probe grid (corner, block size, blocks)" },
         { L"bkprb", L"Baked light probes: one block's cells (the light values aren't decoded yet)" },
         { L"bkprcb", L"Baked light probes: the scene's coarse probes kept loaded (cells; values not decoded yet)" },
-        { L"dat", L"Mii character (Mii\\*.dat: name and every face / body setting); Lib\\NintendoSDK\\IconBody.dat = Mii icon bodies" },
+        { L"dat", L"Mii character (NSSR Mii\\*.dat: name and every face / body setting); NSSR Lib\\NintendoSDK\\IconBody.dat = Mii icon bodies; control\\icon_<language>.dat = the game's HOME Menu icon for each language (JPEG picture) - Textures button" },
+        { L"nacp", L"Game details (control.nacp): name and publisher in each language, version, supported languages, game / save / add-on ID numbers" },
+        { L"json", L"JSON text (in Mario Kart World: *.changelist.json = build notes from Nintendo's tools - the shader database a shader archive was built from, and its change number)" },
+        { L"jpg", L"JPEG picture - Textures button" }, { L"jpeg", L"JPEG picture - Textures button" }, { L"png", L"PNG picture - Textures button" },
         { L"(no extension)", L"No extension: in NSSR, VoiceText speech-engine data (dictionaries, word lists, hash tables)" },
         { L"rs", L"VoiceText speech engine: compiled pronunciation dictionary (identified, not decoded)" },
         { L"tree3", L"VoiceText speech engine: decision tree (identified, not decoded)" },
@@ -2168,10 +2186,11 @@ static void UpdateVox3DButton(void) {
 }
 
 // the folder this scan was extracted from: remembered choice, else the scan log's "from:" line
-static BOOL ScanSource(const wchar_t *scan, wchar_t *out) {
+// (scanRoot: that scan's output folder - NULL = the open scan)
+static BOOL ScanSourceIn(const wchar_t *scan, const wchar_t *scanRoot, wchar_t *out) {
     GetPrivateProfileStringW(L"sources", scan, L"", out, PATHBUF, g_ini);
     if (out[0]) return TRUE;
-    wchar_t lp[PATHBUF]; ScanLogPath(g_root, lp, PATHBUF);
+    wchar_t lp[PATHBUF]; ScanLogPath(scanRoot ? scanRoot : g_root, lp, PATHBUF);
     HANDLE h = CreateFileW(lp, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     char buf[8192]; DWORD got = 0; ReadFile(h, buf, sizeof(buf) - 1, &got, NULL); CloseHandle(h); buf[got] = 0;
@@ -2183,6 +2202,7 @@ static BOOL ScanSource(const wchar_t *scan, wchar_t *out) {
     int k = MultiByteToWideChar(CP_UTF8, 0, f, -1, out, PATHBUF);
     return k > 1;
 }
+static BOOL ScanSource(const wchar_t *scan, wchar_t *out) { return ScanSourceIn(scan, NULL, out); }
 
 // the original in the game dump of something in the output, without asking:
 // 0 = not found (srcKnown says whether the dump folder is known), 1 = a file, 2 = a folder,
@@ -2402,12 +2422,19 @@ static void OpenTerrain3D(const wchar_t *outFile) {
     SetStatus(L"Opening the 3D view...");
     Vox3DOpen(g_wnd, dump, L"terrain", title, g_font, g_dpi);
 }
+// control\icon_<language>.dat.json: the HOME Menu icon pictures (JPEG) in the game's control folder
+static BOOL IsIconDatOut(const wchar_t *path) {
+    const wchar_t *f = wcsrchr(path, L'\\'); f = f ? f + 1 : path;
+    return !_wcsnicmp(f, L"icon_", 5) && EndsWithI(f, L".dat.json");
+}
 // BNTX textures in the output (X.bntx.json, often timg\__Combined.bntx inside a layout archive)
 static BOOL IsTexOut(const wchar_t *path, BOOL isDir) {
     return !isDir && path && path[0] && (EndsWithI(path, L".bntx.json") || EndsWithI(path, L".bntx.zs.json") ||
                                           EndsWithI(path, L".genvres.json") ||     // environment textures (a BFRES holding a BNTX)
                                           EndsWithI(path, L"arrow.raw.json") ||    // agl's mouse pointer image (raw 32x32 RGBA)
                                           EndsWithI(path, L".xtx.json") ||          // plain NVN texture (sead debug font)
+                                          EndsWithI(path, L".jpg.json") || EndsWithI(path, L".jpeg.json") || EndsWithI(path, L".png.json") ||
+                                          IsIconDatOut(path) ||                     // control\icon_<language>.dat (JPEG HOME Menu icons)
                                           IsTerrainLayerOut(path));                 // Mario Kart World terrain tile layers
 }
 // the dump file for an output file, plus its path inside an archive (UTF-8, "" if it isn't in one). FALSE if not found.
@@ -3980,6 +4007,42 @@ static BOOL LinkedScan(const wchar_t *folder, wchar_t *out, size_t n) {
     }
     free(all); return found;
 }
+// the scan made from a game folder: its link (the newest extraction), else any scan in the list whose remembered dump
+// folder / scan log "from:" line is that folder (or the folder inside it / around it: RomFS vs the dump's top folder)
+static BOOL ScanForFolder(const wchar_t *folder, wchar_t *out, size_t n) {
+    if (LinkedScan(folder, out, n)) return TRUE;
+    wchar_t want[PATHBUF]; swprintf(want, PATHBUF, L"%ls", folder);
+    { size_t l = wcslen(want); while (l > 3 && (want[l - 1] == L'\\' || want[l - 1] == L'/')) want[--l] = 0; }
+    int cnt = (int)SendMessageW(g_out, CB_GETCOUNT, 0, 0), nearI = -1;
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < cnt; i++) {
+            wchar_t nm[PATHBUF], dir[PATHBUF], src[PATHBUF] = L"";
+            if (SendMessageW(g_out, CB_GETLBTEXTLEN, i, 0) >= PATHBUF) continue;
+            SendMessageW(g_out, CB_GETLBTEXT, i, (LPARAM)nm);
+            if (!nm[0] || CheckScanName(nm)) continue;
+            ScanDir(nm, dir, PATHBUF);
+            if (!ScanSourceIn(nm, dir, src) || !src[0]) continue;
+            size_t l = wcslen(src); while (l > 3 && (src[l - 1] == L'\\' || src[l - 1] == L'/')) src[--l] = 0;
+            size_t lw = wcslen(want);
+            BOOL exact = !_wcsicmp(src, want);
+            BOOL inside = (!_wcsnicmp(src, want, lw) && src[lw] == L'\\') || (!_wcsnicmp(want, src, l) && want[l] == L'\\');
+            if (pass == 0 && exact) { swprintf(out, n, L"%ls", nm); return TRUE; }
+            if (pass == 1 && inside && nearI < 0) nearI = i;
+        }
+    if (nearI >= 0) { SendMessageW(g_out, CB_GETLBTEXT, nearI, (LPARAM)out); return TRUE; }
+    return FALSE;
+}
+// a game folder was chosen (folder button, or typed + Enter): open the scan made from it, with its scan log
+static void OpenScanForFolder(const wchar_t *now) {
+    // (compared with the scan that's OPEN, not the scan-name box: picking a folder fills the box with a suggested name,
+    // usually this same scan's, so the box said "already open" when it wasn't - build .207)
+    wchar_t sc[PATHBUF], cur[PATHBUF] = L""; if (g_root[0]) ScanNameOf(g_root, cur, PATHBUF);
+    if (!now[0] || g_running || !ScanForFolder(now, sc, PATHBUF)) return;
+    if (cur[0] && !_wcsicmp(sc, cur)) { SelectScanName(sc); return; }   // (already open: just put its name back in the box)
+    if (!SelectScanName(sc)) return;
+    OpenScanShowLog(TRUE);
+    wchar_t st[PATHBUF + 80]; swprintf(st, PATHBUF + 80, L"Opened the scan \"%ls\", extracted from this game folder.", sc); SetStatus(st);
+}
 // the scan list: select this name (TRUE if it's there)
 static BOOL SelectScanName(const wchar_t *name) {
     int i = (int)SendMessageW(g_out, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)name);
@@ -4575,7 +4638,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (SendMessageW(g_sedit, CB_GETDROPPEDSTATE, 0, 0)) SendMessageW(g_sedit, CB_SHOWDROPDOWN, FALSE, 0);
                 StartSearch(FALSE);
             }
-            else if (GetFocus() == g_out || GetParent(GetFocus()) == g_out) LoadTree(TRUE);
+            else if (GetFocus() == g_out || GetParent(GetFocus()) == g_out) OpenScanShowLog(TRUE);
+            else if (GetFocus() == g_romfs) { wchar_t now[PATHBUF]; GetText(g_romfs, now, PATHBUF); OpenScanForFolder(now); }
             else if (GetFocus() == g_gopath) GoToPath();
             break;
         case ID_GOBTN:      GoToPath(); break;
@@ -4600,11 +4664,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_ROMFS_BTN: {
             wchar_t before[PATHBUF]; GetText(g_romfs, before, PATHBUF);
             PickFolder(g_romfs, L"Choose the folder to extract: a RomFS folder, or the top folder of a dump (base, updates and dlc are all included)");
-            wchar_t now[PATHBUF], sc[PATHBUF], cur[PATHBUF]; GetText(g_romfs, now, PATHBUF); GetText(g_out, cur, PATHBUF);
-            if (now[0] && _wcsicmp(now, before) && LinkedScan(now, sc, PATHBUF) && _wcsicmp(sc, cur) && !g_running && SelectScanName(sc)) {
-                LoadTree(TRUE);                                    // (its scan: the most recent extraction of this folder)
-                wchar_t st[PATHBUF + 80]; swprintf(st, PATHBUF + 80, L"Opened the scan \"%ls\", extracted from this game folder.", sc); SetStatus(st);
-            }
+            wchar_t now[PATHBUF]; GetText(g_romfs, now, PATHBUF);
+            if (now[0] && _wcsicmp(now, before)) OpenScanForFolder(now);   // (its scan: the most recent extraction of this folder)
             break;
         }
         case ID_OUT_BTN: {
@@ -4624,7 +4685,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     SetWindowTextW(g_out, t);
                     wchar_t fol[PATHBUF]; BOOL linked = LinkedFolder(t, fol, PATHBUF);
                     if (linked) SetWindowTextW(g_romfs, fol);       // (the game folder it was extracted from)
-                    LoadTree(TRUE);
+                    OpenScanShowLog(TRUE);
                     // a scan from before the links (build .170) or never linked: its remembered dump folder, else the
                     // "from:" line of its scan log - and link it now, dated 0 so it never beats a real extraction
                     if (!linked && g_root[0] && ScanSource(t, fol) && fol[0]) {
@@ -4647,7 +4708,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SetTimer(hwnd, TIMER_FORCE_STOP, 10000, NULL);   // force it if it doesn't stop in 10 s
             }
             break;
-        case ID_LOAD:       LoadTree(FALSE); break;
+        case ID_LOAD:       OpenScanShowLog(FALSE); break;
         case ID_SEARCH:     StartSearch(FALSE); break;
         case ID_SEARCH_EDIT:
             // picking a recent search from the list runs it (saved results load instantly)
