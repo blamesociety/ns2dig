@@ -78,10 +78,12 @@ typedef void (APIENTRY *PFNDeleteBuffers)(GLsizei, const GLuint *);
 #define V3_TIMER_FX 4
 #define V3_TIMER_CSIZE 5
 #define V3_TIMER_WALK 6
-enum { V3_PROPS = 1986, V3_LANDMARKS = 1987, V3_HELPER = 1988, V3_CLOTHSIM = 1989, V3_CLOTH = 1990, V3_LOD = 2001, V3_CUT, V3_RESET, V3_EXPORT, V3_LIST, V3_ALL, V3_NONE, V3_INFO, V3_HELP, V3_CUTLBL, V3_MATLBL, V3_ANIM, V3_PLAY, V3_FRAME, V3_ANIMFILE, V3_ATTACH, V3_SPEED, V3_KEEP, V3_SORT, V3_FIND, V3_COLOUR, V3_OVERLAY, V3_TOPVIEW, V3_PNG, V3_PROBES, V3_CTLBTN, V3_COORD, V3_SOUNDS, V3_SAVEVIEW, V3_CSIZE, V3_CSIZELBL, V3_WALK, V3_WDET, V3_WDETLBL, V3_WCOLL, V3_WHGT, V3_WHGTLBL, V3_WJMP, V3_WJMPLBL, V3_WSPD, V3_WSPDLBL };
+#define V3_TIMER_WATER 7          // moving water ripples: a redraw about 30 times a second while water is on screen
+enum { V3_PROPS = 1986, V3_LANDMARKS = 1987, V3_HELPER = 1988, V3_CLOTHSIM = 1989, V3_CLOTH = 1990, V3_LOD = 2001, V3_CUT, V3_RESET, V3_EXPORT, V3_LIST, V3_ALL, V3_NONE, V3_INFO, V3_HELP, V3_CUTLBL, V3_MATLBL, V3_ANIM, V3_PLAY, V3_FRAME, V3_ANIMFILE, V3_ATTACH, V3_SPEED, V3_KEEP, V3_SORT, V3_FIND, V3_COLOUR, V3_OVERLAY, V3_TOPVIEW, V3_PNG, V3_PROBES, V3_CTLBTN, V3_COORD, V3_SOUNDS, V3_SAVEVIEW, V3_CSIZE, V3_CSIZELBL, V3_WALK, V3_WDET, V3_WDETLBL, V3_WCOLL, V3_WHGT, V3_WHGTLBL, V3_WJMP, V3_WJMPLBL, V3_WSPD, V3_WSPDLBL, V3_WRIP, V3_WRIPLBL, V3_WRSP, V3_WRSPLBL };
 
 /* placed objects of the MKW world (Banc\World_Game03 + World_Game03-Free), read once per dump and kept: */
-typedef struct { char nm[96]; float T[3], R[3], S[3]; unsigned char gridify, resident, sphere; } V3Act;   // sphere: the PrimitiveType - 0 none / other (Cone, Camera...), 1 Sphere, 2 Cylinder(HighRes), 3 Cube
+typedef struct { char nm[96]; float T[3], R[3], S[3]; unsigned char gridify, resident, sphere, prefab; } V3Act;   // sphere: the PrimitiveType - 0 none / other (Cone, Camera...), 1 Sphere, 2 Cylinder(HighRes), 3 Cube; prefab: from a course placed whole (Rainbow Road)
+typedef struct { wchar_t path[2400], file[96]; float T[3], ry; } V3Pref;   // a course placed whole by a point: its placement file and where it's put
 // one record per object name: how many are placed in the whole world, its model's size, and what the last load did
 // with it (ent: the list entry it's drawn as; why: why it isn't) - the "objects near" list reports from this
 typedef struct { char nm[96]; int count; float rad; signed char model; int ci; char ent[64]; char why[72]; } V3Name;   // (ci: this load's model)
@@ -119,6 +121,7 @@ typedef struct {
     int nAtt, bodyN, attOn;
     int nCloth; char clothInfo[300]; float drawCentre[3];
     int hasLandmarks, landmarksOff; HWND lmCb; HWND propCb; int propsOn;
+    V3Pref pref[8]; int npref;   // whole courses placed by a point (Rainbow Road): their placement files, read by V3GatherActors
     char (*keepName)[VOX_MATN]; unsigned char *keepHidden; int nkeep, ovlFresh, dropKeep;   // terrain: which list entries were ticked, kept over a reload (by name)   // propsOn: "Show props" (full-detail areas; loads them)   // MKW terrain: "Landmarks" - the other objects in WorldResident (mountains, cranes...)
     int hasCliffs, cliffsOff;        // MKW terrain: cliffs / ice models placed in the world (the helper-bones box becomes "Show cliffs and ice")
     HWND prbCb; int prbSel; float *prb; int nprb; float prbLo[3], prbHi[3]; char prbFile[96]; float *prbLoad; int nprbLoad; char prbFileLoad[96]; int nprbFine, nprbFineLoad;   // (fine: the .dlpg probes at the end of the list, full-detail areas)
@@ -149,13 +152,16 @@ typedef struct {
     // walking's streaming: the whole world at low resolution kept as a backdrop, the previous full-detail square while the
     // next one loads, the square's centre / size, the ground heights of the whole world, the "full detail" slider
     struct V3Snap { int ok, stride; GLuint vbo[2]; float *cpuV; uint32_t *cpuI; float centre[3]; GLsizei nidx;
-                    struct V3SnapRun { GLsizei first, count; GLuint tex; float uvs; unsigned char kind, alpha; short rank; unsigned char col[3]; } *run; int nrun; } wBack;
+                    struct V3SnapRun { GLsizei first, count; GLuint tex; float uvs; unsigned char kind, alpha; short rank; unsigned char col[3], wt, scroll; } *run; int nrun; } wBack;
     // the full-detail tiles: a fixed grid of squares (size = the slider); the 2 x 2 nearest you are kept loaded, a spare
     // or so more are kept so going back doesn't load again. Loaded one at a time through the normal area pipeline.
     struct V3Tile { int tx, tz, stale; struct V3Snap s; float *h, ox, oz, st, cb[4]; int G;
                     float *ct; int nct, cw, chh; int *cStart, *cIdx; float cx0, cz0, ccs; } wTile[6];   /* ct: its solid triangles (9 floats), in a grid of cells for collisions */ int wLoadTx, wLoadTz, wTileLoading, wLoadBuild, wLift, wGridN, wDbgBack;
     char (*kgName)[VOX_MATN]; unsigned char *kgState; int nkg;   // list groups all ticked (1) / all unticked (2) before a reload
     float *wGrid; int wGridW; float wGox, wGoz, wGst, wWorldW[4], wRadius; int wDet, wAreaOn; HWND wDetLbl, wDetSl, wHgtLbl, wHgtSl, wJmpLbl, wJmpSl, wSpdLbl, wSpdSl; float wHeight, wJump, wBR[4], wBRg[4]; int wBROk, wBRgOk;
+    // terrain water, for the water shader: wRip the ripple pattern's repeat, wRsp its speed (game units / a second) - both our
+    // choices, not in the game's files; wDrew: water was drawn since the last redraw tick (moving ripples redraw only then)
+    HWND wRipLbl, wRipSl, wRspLbl, wRspSl; float wRip, wRsp; int wDrew;
     int dragging; POINT last;
     int cutPos;                      // 0..1000 (1000 = no cut)
     int fillingList;
@@ -240,6 +246,15 @@ static unsigned char *V3ReadTexL(const wchar_t *modelPath, const char *name, int
     }
     return NULL;
 }
+// a single-channel mask texture's value per texel (a BC4 mask can decode as white with the value in alpha): alpha when
+// the texture has any alpha, else red
+static unsigned char *V3MaskOf(unsigned char *px, int w, int h) {
+    if (!px) return NULL; size_t n = (size_t)w * h; int useA = 0;
+    for (size_t k = 0; k < n; k++) if (px[k * 4 + 3] != 255) { useA = 1; break; }
+    unsigned char *m = (unsigned char *)malloc(n ? n : 1); if (!m) { free(px); return NULL; }
+    for (size_t k = 0; k < n; k++) m[k] = px[k * 4 + (useA ? 3 : 0)];
+    free(px); return m;
+}
 // a texture's average brightness (each texel's brightest channel; sampled)
 static double V3TexBright(const unsigned char *px, int w, int h) {
     size_t n = (size_t)w * h, step = n > 65536 ? n / 65536 : 1, c = 0; double sum = 0;
@@ -265,31 +280,92 @@ static unsigned char *V3ReadTex(const wchar_t *modelPath, const char *name, int 
         return px;
     }
     if (!strncmp(name, "*Aurora:", 8)) {
-        // the Aurora track: a bright cyan base with its glow texture added (as in the game: glowing cyan water)
-        unsigned char *px = V3ReadTex(modelPath, name + 8, w, h); if (!px) return NULL;
-        // only its speckle: the glow's bright edge columns and its lighter sides (across the road) repeated along the
-        // road as stripes in .218-.219 - the outer 3% of columns is taken from further in, and every column is evened
-        // out to the texture's average brightness
-        static const int base[3] = { 20, 120, 170 };
-        int W = *w, H = *h, E = W * 3 / 100;
-        double *cm = (double *)calloc((size_t)W * 3, sizeof(double)); unsigned char *o = (unsigned char *)malloc((size_t)W * H * 4);
-        if (!cm || !o) { free(cm); free(o); return px; }
+        /* the Aurora track's water, as the game builds it (lighting aside): "*Aurora:<layer below>^<road glow>" (not "|": that's a ? panel's albedo|glow array pair to the texture jobs - .224 went flat blue).
+           The road's colour is black and its glows are at strength 202 (x2.2): the speckled glow of the water layer below
+           (its bright edge columns and lighter sides evened out - they repeated along the road as stripes in .218-.219)
+           x2.2, plus the road's own glow (its average) x2.2 through the water shader's flow streaks
+           (CmnTex_Special_RainbowRiver_1_Mip_BC4U), plus its sparkles (_2) */
+        char un[128], gn[128]; const char *bar = strchr(name + 8, '^');
+        snprintf(un, sizeof un, "%.*s", bar ? (int)(bar - name - 8) : 127, name + 8); snprintf(gn, sizeof gn, "%s", bar ? bar + 1 : "");
+        int W = 0, H = 0; unsigned char *px = V3ReadTex(modelPath, un, &W, &H); if (!px) return NULL;
+        double G[3] = { 7, 59, 77 };                                          // (the road glow's average, if it can't be read)
+        if (gn[0]) { int tw = 0, th = 0; unsigned char *q = V3ReadTex(modelPath, gn, &tw, &th);
+            if (q) { double sm[3] = { 0, 0, 0 }; size_t nn = (size_t)tw * th; for (size_t k = 0; k < nn; k++) for (int c = 0; c < 3; c++) sm[c] += q[k * 4 + c];
+                     if (nn) for (int c = 0; c < 3; c++) G[c] = sm[c] / nn; free(q); } }
+        int E = W * 3 / 100;
+        double *cm = (double *)calloc((size_t)W * 3, sizeof(double)); if (!cm) { free(px); return NULL; }
         double g[3] = { 0, 0, 0 };
         for (int x = 0; x < W; x++) {
             int sx = x < E ? x + 2 * E : x >= W - E ? x - 2 * E : x; if (sx < 0 || sx >= W) sx = x;
             for (int y = 0; y < H; y++) for (int c = 0; c < 3; c++) cm[x * 3 + c] += px[((size_t)y * W + sx) * 4 + c];
             for (int c = 0; c < 3; c++) { cm[x * 3 + c] /= H; g[c] += cm[x * 3 + c] / W; }
         }
-        for (int x = 0; x < W; x++) {
-            int sx = x < E ? x + 2 * E : x >= W - E ? x - 2 * E : x; if (sx < 0 || sx >= W) sx = x;
-            for (int y = 0; y < H; y++) for (int c = 0; c < 3; c++) {
-                double v2 = base[c] + (px[((size_t)y * W + sx) * 4 + c] - cm[x * 3 + c] + g[c]) * 1.5;
-                o[((size_t)y * W + x) * 4 + c] = (unsigned char)(v2 < 0 ? 0 : v2 > 255 ? 255 : v2);
+        int fw = 0, fh = 0, sw = 0, shh = 0;
+        unsigned char *fl = V3ReadTex(modelPath, "CmnTex_Special_RainbowRiver_1_Mip_BC4U", &fw, &fh), *sp = V3ReadTex(modelPath, "CmnTex_Special_RainbowRiver_2_Mip_BC4U", &sw, &shh);
+        fl = V3MaskOf(fl, fw, fh); sp = V3MaskOf(sp, sw, shh);
+        int OW = fl ? fw : W, OH = fl ? fh : H;
+        unsigned char *o = (unsigned char *)malloc((size_t)OW * OH * 4);
+        if (!o) { free(cm); free(px); free(fl); free(sp); return NULL; }
+        for (int y = 0; y < OH; y++) for (int x = 0; x < OW; x++) {
+            int ux = (int)((long long)x * W / OW), uy = (int)((long long)y * H / OH);
+            int sx = ux < E ? ux + 2 * E : ux >= W - E ? ux - 2 * E : ux; if (sx < 0 || sx >= W) sx = ux;
+            size_t k = (size_t)y * OW + x;
+            double f = fl ? fl[k] / 255.0 : 0.5, sk = sp ? sp[((size_t)(y % shh)) * sw + (x % sw)] / 255.0 : 0;
+            for (int c = 0; c < 3; c++) {
+                double v2 = (px[((size_t)uy * W + sx) * 4 + c] - cm[ux * 3 + c] + g[c]) * 2.2 + G[c] * 2.2 * f * 0.6 + sk * 200;
+                o[k * 4 + c] = (unsigned char)(v2 < 0 ? 0 : v2 > 255 ? 255 : v2);
             }
-            for (int y = 0; y < H; y++) o[((size_t)y * W + x) * 4 + 3] = 255;
+            o[k * 4 + 3] = 255;
         }
-        free(cm); free(px); px = o;
+        free(cm); free(px); free(fl); free(sp); *w = OW; *h = OH; return o;
+    }
+    if (!strncmp(name, "*RainbowRiver:", 14)) {
+        // Rainbow Road's river: <colour>^<glow> textures' average colours, the glow through the game's flow streaks
+        // (CmnTex_Special_RainbowRiver_1_Mip_BC4U), its sparkles (_2) on top; the patterns' own size
+        char an[128], en[128]; const char *bar = strchr(name + 14, '^');
+        snprintf(an, sizeof an, "%.*s", bar ? (int)(bar - name - 14) : 127, name + 14); snprintf(en, sizeof en, "%s", bar ? bar + 1 : an);
+        double A[3] = { 22, 146, 221 }, E[3] = { 1, 110, 234 };          // (the textures' averages, if they can't be read)
+        for (int t = 0; t < 2; t++) { int tw = 0, th = 0; unsigned char *q = V3ReadTex(modelPath, t ? en : an, &tw, &th); if (!q) continue;
+            double sm[3] = { 0, 0, 0 }; size_t nn = (size_t)tw * th; for (size_t k = 0; k < nn; k++) for (int c = 0; c < 3; c++) sm[c] += q[k * 4 + c];
+            if (nn) for (int c = 0; c < 3; c++) (t ? E : A)[c] = sm[c] / nn; free(q); }
+        int fw = 0, fh = 0, sw = 0, shh = 0;
+        unsigned char *fl = V3ReadTex(modelPath, "CmnTex_Special_RainbowRiver_1_Mip_BC4U", &fw, &fh), *sp = V3ReadTex(modelPath, "CmnTex_Special_RainbowRiver_2_Mip_BC4U", &sw, &shh);
+        fl = V3MaskOf(fl, fw, fh); sp = V3MaskOf(sp, sw, shh);
+        int W = fl ? fw : sp ? sw : 4, H = fl ? fh : sp ? shh : 4;
+        unsigned char *px = (unsigned char *)malloc((size_t)W * H * 4); if (!px) { free(fl); free(sp); return NULL; }
+        for (int y2 = 0; y2 < H; y2++) for (int x2 = 0; x2 < W; x2++) {
+            size_t k = (size_t)y2 * W + x2;
+            double f = fl ? fl[k] / 255.0 : 0.5, sk = sp ? sp[((size_t)(y2 % shh)) * sw + (x2 % sw)] / 255.0 : 0;
+            for (int c = 0; c < 3; c++) { double v2 = A[c] + E[c] * f * 0.6 + sk * 200; px[k * 4 + c] = (unsigned char)(v2 > 255 ? 255 : v2); }
+            px[k * 4 + 3] = 255;
+        }
+        free(fl); free(sp); *w = W; *h = H; return px;
+    }
+    if (!strncmp(name, "*Tint:", 6)) {
+        // a grey pattern tinted by two colours (waterfalls): <texture>^RRGGBB^RRGGBB - the first where it's dark, the
+        // second on its brightest streaks; see-through kept
+        char tn[128]; unsigned c0[3] = { 82, 120, 124 }, c1[3] = { 218, 218, 218 }; const char *b1 = strchr(name + 6, '^');
+        snprintf(tn, sizeof tn, "%.*s", b1 ? (int)(b1 - name - 6) : 127, name + 6);
+        if (b1) { sscanf(b1 + 1, "%2x%2x%2x", &c0[0], &c0[1], &c0[2]); const char *b2 = strchr(b1 + 1, '^'); if (b2) sscanf(b2 + 1, "%2x%2x%2x", &c1[0], &c1[1], &c1[2]); }
+        unsigned char *px = V3ReadTex(modelPath, tn, w, h); if (!px) return NULL;
+        size_t nn = (size_t)*w * *h;
+        for (size_t k = 0; k < nn; k++) {
+            unsigned char *q = px + k * 4; int m = q[0] > q[1] ? q[0] : q[1]; if (q[2] > m) m = q[2];
+            // white only on the brightest streaks: t = ((brightness - 0.5) / 0.5)^2 (our choice, picked by the user
+            // from a preview - a straight mix by brightness came out mostly pale grey in .228)
+            int u = m * 2 - 255; if (u < 0) u = 0;
+            int t = u * u / 255;
+            for (int c = 0; c < 3; c++) q[c] = (unsigned char)(c0[c] + ((int)c1[c] - (int)c0[c]) * t / 255);
+            // see-through like water: the teal 55% solid, the white streaks solid (ours - the game blends its falls; the
+            // material's alpha comes from its shader graph, not in the files) - drawn blended after the solid scenery
+            q[3] = (unsigned char)(140 + 115 * t / 255);
+        }
         return px;
+    }
+    if (!strcmp(name, "*Cloud")) {               // Rainbow Road's clouds: a soft white (the view's lighting shades them)
+        unsigned char *px = (unsigned char *)malloc(4 * 4 * 4); if (!px) return NULL;
+        for (int k = 0; k < 16; k++) { px[k * 4] = 240; px[k * 4 + 1] = 241; px[k * 4 + 2] = 247; px[k * 4 + 3] = 255; }
+        *w = *h = 4; return px;
     }
     if (!strcmp(name, "*Dark")) {                    // a material with no colour texture whose colour is black (drive_albedo_color 900)
         unsigned char *px = (unsigned char *)malloc(4 * 4 * 4); if (!px) return NULL;
@@ -991,6 +1067,7 @@ static void V3LayerJobFn(void *ctx, int i) {
     j->px = h; j->w = W; j->h = H;
 }
 static int V3IsWaterMat(const char *n);
+static int V3IsFallTex(V3 *v, int sl);
 static unsigned char *V3ReadTex(const wchar_t *modelPath, const char *name, int *w, int *h);
 // water, muddy water, ghost swamp: the game's water texture (CmnTex_Tera_Water_Emm, first layer) as a grey ripple pattern over
 // their colour, a little see-through (drawn last, blended). Lava keeps its plain colour.
@@ -1281,6 +1358,7 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
     free(v->wta); v->wta = NULL; v->nwta = 0; int capW = 0;
     free(v->isl); v->isl = NULL; v->nisl = 0; int capI = 0;
     struct { float T[3]; char info[160]; } sens[32]; int nsens = 0;      // the island tunnels' sensors (WorldResident)
+    struct { float T[3], ry; char path[160]; } pts[8]; int npts = 0;      // whole courses placed by a point (Rainbow Road)
     swprintf(v->allRoot, 1024, L"%ls", key);
     int cap = 8192; V3Act *act = (V3Act *)malloc((size_t)cap * sizeof(V3Act)); if (!act) return;
     const int HS = 1 << 21; uint64_t *seen = (uint64_t *)calloc(HS, sizeof(uint64_t)); int nseen = 0;   // (name, spot) already taken
@@ -1316,6 +1394,10 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
                     if (dup) continue;
                     seen[s] = h; nseen++;
                 }
+                if (resident && !strncmp(nm, "SystemObj_Point", 15) && npts < 8) {   // a course placed whole: Dynamic.PrefabPath
+                    const char *pp = BymlStr(&y, BymlGet(&y, BymlGet(&y, a, "Dynamic"), "PrefabPath"));
+                    if (pp && *pp) { memcpy(pts[npts].T, A.T, sizeof A.T); pts[npts].ry = A.R[1]; snprintf(pts[npts].path, sizeof pts[npts].path, "%s", pp); npts++; }
+                }
                 if (!strcmp(nm, "SystemObj_IslandTunnelSensor_00") && nsens < 32) {   // an island's way in: Dynamic.IslandInfo
                     const char *ii = BymlStr(&y, BymlGet(&y, BymlGet(&y, a, "Dynamic"), "IslandInfo"));
                     if (ii && *ii) { memcpy(sens[nsens].T, A.T, sizeof A.T); snprintf(sens[nsens].info, sizeof sens[nsens].info, "%s", ii); nsens++; }
@@ -1334,6 +1416,42 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
             free(b);
         } while (FindNextFileW(fh, &fd));
         FindClose(fh);
+    }
+    /* Rainbow Road: WorldResident's SystemObj_PointRainbow_01 has no Translate / Rotate (so 0, 0, 0) and Dynamic.PrefabPath
+       "Work/Banc/Scene/Rainbow_00.bcett.json" = Banc\Rainbow_00_Fix.bcett.byml.zs, whose coordinates are therefore the
+       world's: the track floats 2,800-5,100 up from just above the bay bridge (x -1,400..800, z 3,200..7,700). Its
+       Stage_RainbowGround_A (a full-size low-poly copy of the island, ±27,500 - what the old fall-off glitch landed on)
+       isn't drawn: it would cover the real island. Every one of its things is listed as "Rainbow Road: ..." (one group). */
+    v->npref = 0;
+    for (int k = 0; k < npts; k++) {
+        char bn[96]; { const char *sl = strrchr(pts[k].path, '/'); snprintf(bn, sizeof bn, "%s", sl ? sl + 1 : pts[k].path); char *d = strchr(bn, '.'); if (d) *d = 0; }
+        static const wchar_t *const fmts[] = { L"%ls\\Banc\\%hs_Fix.bcett.byml.zs", L"%ls\\Banc\\%hs.bcett.byml.zs", L"%ls\\Banc\\Scene\\%hs_Fix.bcett.byml.zs", L"%ls\\Banc\\Scene\\%hs.bcett.byml.zs" };
+        unsigned char *z = NULL; size_t zn = 0; wchar_t path[2400];
+        for (int f = 0; f < 4 && !z; f++) { swprintf(path, 2400, fmts[f], root, bn); z = VoxReadFile(path, &zn); }
+        if (!z) continue;
+        if (v->npref < 8) { V3Pref *pf = &v->pref[v->npref++]; swprintf(pf->path, 2400, L"%ls", path); memcpy(pf->T, pts[k].T, sizeof pf->T); pf->ry = pts[k].ry;
+                            const wchar_t *fn = wcsrchr(path, L'\\'); swprintf(pf->file, 96, L"%ls", fn ? fn + 1 : path); wchar_t *e = wcsstr(pf->file, L".bcett"); if (e) *e = 0; }
+        size_t n; unsigned char *b = VoxUnzstd(z, zn, &n); free(z); if (!b) continue;
+        float cr = cosf(pts[k].ry), sr = sinf(pts[k].ry);
+        Byml y; BymlNode r = BymlOpen(&y, b, n), acts = BymlGet(&y, r, "Actors");
+        for (int i = 0; i < BymlCount(&y, acts); i++) {
+            BymlNode a = BymlAt(&y, acts, i);
+            const char *nm = BymlStr(&y, BymlGet(&y, a, "Name")); char gclean[96];
+            if (!nm) { const char *g = BymlStr(&y, BymlGet(&y, a, "Gyaml")); if (!g) continue; const char *sl = strrchr(g, '/');
+                       snprintf(gclean, sizeof gclean, "%s", sl ? sl + 1 : g); char *e = strstr(gclean, ".gear__"); if (e) *e = 0; nm = gclean; }
+            if (!nm[0] || (!strncmp(nm, "Stage_", 6) && strstr(nm, "Ground_"))) continue;     // (the low-poly island copy)
+            V3Act A; memset(&A, 0, sizeof A); snprintf(A.nm, sizeof A.nm, "%s", nm); A.prefab = 1;
+            BymlNode t = BymlGet(&y, a, "Translate"), ro = BymlGet(&y, a, "Rotate"), sc = BymlGet(&y, a, "Scale");
+            float L[3]; for (int q = 0; q < 3; q++) { L[q] = BymlFloat(BymlAt(&y, t, q), 0); A.R[q] = BymlFloat(BymlAt(&y, ro, q), 0); A.S[q] = 1; }
+            A.T[0] = pts[k].T[0] + L[0] * cr + L[2] * sr; A.T[1] = pts[k].T[1] + L[1]; A.T[2] = pts[k].T[2] - L[0] * sr + L[2] * cr; A.R[1] += pts[k].ry;
+            if (sc.type == 0xC0) for (int q = 0; q < 3; q++) A.S[q] = BymlFloat(BymlAt(&y, sc, q), 1);
+            else if (sc.type) A.S[0] = A.S[1] = A.S[2] = BymlFloat(sc, 1);
+            const char *prim = BymlStr(&y, BymlGet(&y, a, "PrimitiveType")); A.sphere = (unsigned char)(!prim ? 0 : !strcmp(prim, "Sphere") ? 1 : !strncmp(prim, "Cylinder", 8) ? 2 : !strcmp(prim, "Cube") ? 3 : 0);
+            if (v->nAllAct == cap) { V3Act *na = (V3Act *)realloc(act, (size_t)cap * 2 * sizeof(V3Act)); if (!na) break; act = na; cap *= 2; }
+            act[v->nAllAct++] = A;
+            V3Name *e = V3NameGet(v, A.nm, 1); if (e) e->count++;
+        }
+        free(b);
     }
     // foliage: trees, bushes, grass tufts, stones, flowers... (MKW: ~59,000) aren't in the Banc placement files but in
     // Foliage\<scene>\FoliageInstance.byml - an array of { actor_name, pos, rot (radians), scale, guid, ... }.
@@ -1621,6 +1739,11 @@ static void V3AddSurfaceObjects(V3 *v) {
             if (phase) V3MarkWhy(v, nm, "cliff / iceberg outside WorldResident: skipped (cliffs come from WorldResident and the ground pieces)");
             continue;
         } else { generic = 1; V3GenericKind(nm, p->nmat >= budget, kind, sizeof kind); ck = kind; }
+        if (act[i].prefab) {                     // Rainbow Road's things: one group of their own, "Rainbow Road: <name>"
+            char sh[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh); snprintf(kind, sizeof kind, "Rainbow Road: %s", !strncmp(nm, "Stage_", 6) ? nm + 6 : sh);
+            { size_t L = strlen(kind); if (L > 3 && !strcmp(kind + L - 3, "_00")) kind[L - 3] = 0; }
+            ck = kind; special = 0;
+        }
         if (ck && strncmp(nm, "Stage_", 6) && act[i].gridify) {               // merged into the gridify pieces (loaded there)
             if (phase) {
                 if (whole) V3MarkWhy(v, nm, "merged into the ground pieces (Gridify): shown in full-detail areas");
@@ -1650,7 +1773,8 @@ static void V3AddSurfaceObjects(V3 *v) {
         if (e->ci == -2) {                                          // no model: a marker (full-detail areas)
             if (whole) { V3MarkWhy(v, nm, "no model file: a marker in full-detail areas"); continue; }
             char ent[VOX_MATN], sh[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh);
-            if (strstr(nm, "SpecialSurface") || !strncmp(nm, "CmnObj_SFC", 10))     // surfaces without a model: with the other surfaces
+            if (act[i].prefab) snprintf(ent, sizeof ent, "Rainbow Road: marker %s", sh);   // (unticked at first, like Marker)
+            else if (strstr(nm, "SpecialSurface") || !strncmp(nm, "CmnObj_SFC", 10))     // surfaces without a model: with the other surfaces
                 snprintf(ent, sizeof ent, "Surface: %s (no model)", !strncmp(sh, "SpecialSurface", 14) ? sh + 14 : sh);
             else snprintf(ent, sizeof ent, "Marker: %s", sh);
             if (act[i].sphere) { if (V3AddShape(v, &act[i], ent, 0)) V3MarkDrawn(v, nm, ent); continue; }   // a box / ball / cylinder of its own (warp zones, triggers...)
@@ -1718,6 +1842,13 @@ static void V3AddSurfaceObjects(V3 *v) {
                 float l = sqrtf(nx * nx + ny * ny + nz * nz); steep = l > 0 && fabsf(ny) / l < 0.5f; }
             if (ck) steep = 0;
             int slot = ck ? 0 : (int)mp2 * 2 + steep; if (slot > 255) slot = 255;
+            // a stage's / landmark's river surface (MKW Stage_RaftingRiver_A: Mt_Water_Deep / Mt_Water_Shallow, colour
+            // texture CmnObj_WaterSurface000_RaftingRiver_Alb - an opaque brown riverbed pattern the game draws its water
+            // shader over): its own entry "<entry> (WaterSurface)", drawn as water (V3DrawAsWater) - drawn plain it was
+            // brown like the ground and the river looked missing (.229)
+            int wsurf = ck && mp2 < (unsigned)m->nmat && strstr(m->texAlb[mp2], "WaterSurface") && !strstr(m->texAlb[mp2], "aterfall");
+            if (wsurf) slot = 254;
+            if (matOf[slot] < 0 && wsurf) { char wn[VOX_MATN + 16]; snprintf(wn, sizeof wn, "%.*s (WaterSurface)", VOX_MATN - 20, ck); matOf[slot] = PhMat(p, wn); }
             if (matOf[slot] < 0 && ck) matOf[slot] = PhMat(p, ck);
             if (matOf[slot] < 0) {
                 char nm3[VOX_MATN + 16]; const char *sk = V3SurfaceKind(base);
@@ -2259,7 +2390,11 @@ static void V3AddGridifyPieces(V3 *v) {
                     }
                     int had = p->nmat;
                     matOf[pt] = ent[0] ? PhMat(p, ent) : -1;
-                    if (ent[0] && !strncmp(ent, "Scenery:", 8) && matOf[pt] >= had && matOf[pt] < VOX_MAXMAT) p->startHidden[matOf[pt]] = 1;
+                    // (scenery starts hidden - except the game's water surfaces and waterfalls merged into the pieces:
+                    // "Scenery: WaterSurface000_K" (rivers / rapids, e.g. at the foot of ShortWaterFall000_E) and
+                    // "Scenery: ShortWaterFall000_E" - hidden, the rivers looked missing in .228)
+                    int wet = strstr(ent, "WaterSurface") || strstr(ent, "WaterFall") || strstr(ent, "Waterfall");
+                    if (ent[0] && !strncmp(ent, "Scenery:", 8) && !wet && matOf[pt] >= had && matOf[pt] < VOX_MAXMAT) p->startHidden[matOf[pt]] = 1;
                     if (matOf[pt] >= 0 && matOf[pt] < VOX_MAXMAT) {
                         int mi = matOf[pt]; v->fromPiece[mi] = 1;
                         char line[260]; snprintf(line, sizeof line, "%s\n", both);           // (each part name once per entry, up to 64 KB)
@@ -3384,6 +3519,7 @@ static void V3SnapFree(V3 *v, struct V3Snap *S) {
     memset(S, 0, sizeof *S);
 }
 // moves the current mesh into S (the viewer then has no mesh of its own until the next one arrives)
+static int V3WaterType(const char *n);
 static void V3SnapTake(V3 *v, struct V3Snap *S) {
     V3SnapFree(v, S);
     if (!v->haveMesh) return;
@@ -3402,11 +3538,12 @@ static void V3SnapTake(V3 *v, struct V3Snap *S) {
             int sl = rm - VOX_MAXMAT, k = sl < v->nmtex ? v->mtexTex[sl] : -1;
             R->tex = k >= 0 ? v->tex[k].id : 0; R->alpha = k >= 0 && v->tex[k].alpha; R->rank = (short)(sl < 4000 ? sl : 4000);
             R->kind = R->tex && sl < v->nmtex && strstr(v->mtexName[sl], "Lava") ? 3 : 2;
+            R->scroll = (unsigned char)(R->tex && V3IsFallTex(v, sl));
         } else if (v->waterBlend[rm] == 2) {              // invisible areas / markers (when ticked): their list colour, see-through
             R->kind = 5; VoxMatColour(&v->part, rm, R->col);
         } else {
             int k = v->partTex[rm]; R->tex = k >= 0 ? v->tex[k].id : 0;
-            if (v->waterBlend[rm]) { if (!R->tex) continue; R->kind = 1; }
+            if (v->waterBlend[rm]) { if (!R->tex) continue; R->kind = 1; R->wt = (unsigned char)V3WaterType(v->part.matName[rm]); }
             else {
                 int gm = v->part.terrMat[rm]; R->uvs = gm >= 0 ? VoxTeraUVScale((unsigned)gm) : 1;
                 // the ground itself (0), or a placed thing without a texture of its own / a ground piece ("Scenery: ...", 6):
@@ -3420,6 +3557,142 @@ static void V3SnapTake(V3 *v, struct V3Snap *S) {
     v->haveMesh = 0; S->ok = 1;
 }
 // cb: x0, z0, x1, z1 (the part's units) - the ground and water are cut to that square (a tile's own; its neighbours have the rest)
+/* ---- The water shader (terrain water: seas, lakes, rivers, mud, the ghost swamp) ----
+   Copies what the game's water is made of (TeraModel_Water.TeraWater, material Translucent: colour from a water-colour map,
+   glossy, see-through; the colours from Gyml\TerrainWaterMaterialGParam\<Deep / Mud / GhostSwamp>), lighting aside:
+     - the colour by depth (the water height minus the ground height under it, carried per vertex in the colour's 4th byte by
+       the terrain loader, 0.25 m steps): SubColor in the shallows -> BaseColor in deep water (over 10 m - our choice)
+     - see-through in the shallows, more solid deeper (our choice: 35 % -> 92 %)
+     - towards SolidColor at low angles (Fresnel, F0 0.02 - water's usual value)
+     - a sun glint from the game's roughness (BaseRoughness 0.07 water, 0.3 for mud - our choice; SolidRoughness is 0.8)
+     - foam (WhiteWaveColor) where it's under 1.2 m deep (our choice), broken up by the ripple pattern
+     - the ripple pattern (CmnTex_Tera_Water_Emm, as before) bends the surface for the glints, repeating every v->wRip units
+   The game's colours are linear; below they're as sRGB 0-255. Without OpenGL 2 shaders: the old water (colour x ripple). */
+typedef unsigned int (APIENTRY *PFNCreateShader)(GLenum); typedef void (APIENTRY *PFNShaderSource)(unsigned int, GLsizei, const char *const *, const GLint *);
+typedef void (APIENTRY *PFNCompileShader)(unsigned int); typedef void (APIENTRY *PFNGetShaderiv)(unsigned int, GLenum, GLint *);
+typedef unsigned int (APIENTRY *PFNCreateProgram)(void); typedef void (APIENTRY *PFNAttachShader)(unsigned int, unsigned int);
+typedef void (APIENTRY *PFNLinkProgram)(unsigned int); typedef void (APIENTRY *PFNGetProgramiv)(unsigned int, GLenum, GLint *);
+typedef void (APIENTRY *PFNUseProgram)(unsigned int); typedef GLint (APIENTRY *PFNGetUniformLocation)(unsigned int, const char *);
+typedef void (APIENTRY *PFNUniform1f)(GLint, GLfloat); typedef void (APIENTRY *PFNUniform3f)(GLint, GLfloat, GLfloat, GLfloat); typedef void (APIENTRY *PFNUniform1i)(GLint, GLint);
+// (one per OpenGL context: each 3D view window has its own, and a shader made in one can't be used in another)
+typedef struct { HGLRC rc; int state; unsigned int prog; PFNUseProgram use; PFNUniform1f u1f; PFNUniform3f u3f; PFNUniform1i u1i;
+                 GLint uRip, uScl, uShal, uDeep, uSolid, uFoam, uUseDep, uRough, uSun, uTim; } V3Wsh;   // state: 0 not tried, 1 ready, -1 not available
+static V3Wsh g_wshAll[16], g_wsh;     // g_wsh: the current context's (copied in by V3WaterShaderInit)
+static const char *const kWaterVS =
+    "#version 120\n"
+    "varying vec2 uv; varying float dep; varying vec3 ep, on, vc;\n"
+    "void main() { uv = gl_MultiTexCoord0.xy; dep = gl_Color.a * 63.75; vc = gl_Color.rgb; on = gl_Normal;\n"
+    "  vec4 e = gl_ModelViewMatrix * gl_Vertex; ep = e.xyz; gl_ClipVertex = e; gl_Position = gl_ProjectionMatrix * e; }\n";
+// useDep 1: the terrain's water (flat, depth in the colour's 4th byte); 0: another water surface (waterfalls, placed
+// water models - any slope): the same game colours and see-through as if 4 m deep (our choice - they have no depth;
+// their own blue 40,110,190 was too bright beside the sea in .227-.228), a weaker low-angle sheen, and on steep parts
+// (falls / rapids) foam streaks from the ripple pattern (whitewater; .232's pale, 80%-solid falls). Both: the game's
+// TerrainWaterMaterialGParam colours
+static const char *const kWaterFS =
+    "#version 120\n"
+    "uniform sampler2D rip; uniform float scl, useDep, rough, tim; uniform vec3 cShal, cDeep, cSolid, cFoam, sunE;\n"
+    "varying vec2 uv; varying float dep; varying vec3 ep, on, vc;\n"
+    "void main() {\n"
+    "  vec2 t = uv * scl, d1 = vec2(0.8, 0.6) * tim, d2 = vec2(-0.6, 0.8) * tim; float px = 1.0 / 256.0;\n"
+    "  vec2 t1 = t + d1, t2 = t * 0.83 + d2;\n"
+    "  float r = texture2D(rip, t1).r, rx = texture2D(rip, t1 + vec2(px, 0.0)).r, rz = texture2D(rip, t1 + vec2(0.0, px)).r;\n"
+    "  float q = texture2D(rip, t2).r, qx = texture2D(rip, t2 + vec2(px, 0.0)).r, qz = texture2D(rip, t2 + vec2(0.0, px)).r;\n"
+    "  vec3 n = length(on) > 0.01 ? normalize(on) : vec3(0.0, 1.0, 0.0);\n"
+    "  vec3 tx = normalize(abs(n.y) < 0.9 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(vec3(0.0, 0.0, 1.0), n)), tz = cross(tx, n);\n"
+    "  vec3 N = normalize(gl_NormalMatrix * (n - tx * ((rx - r) + (qx - q)) * 28.0 - tz * ((rz - r) + (qz - q)) * 28.0));\n"
+    "  vec3 V = normalize(-ep); if (dot(N, V) < 0.0) N = -N;\n"
+    "  float d = useDep > 0.5 ? dep : 4.0, td = clamp(d / 10.0, 0.0, 1.0);\n"
+    "  vec3 col = mix(cShal, cDeep, sqrt(td)) * (0.9 + (r - 0.5) * 0.6);\n"
+    "  float fr = clamp(0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0), 0.0, 1.0);\n"
+    "  col = mix(col, cSolid, fr * (useDep > 0.5 ? 0.85 : 0.25));\n"
+    "  vec3 H = normalize(normalize(sunE) + V);\n"
+    "  col += vec3(pow(max(dot(N, H), 0.0), 2.0 / (rough * rough + 0.0001)) * 0.6);\n"
+    "  float steep = 1.0 - smoothstep(0.55, 0.95, abs(n.y));\n"
+    "  float foam = useDep > 0.5 ? (1.0 - smoothstep(0.0, 1.2, d)) * smoothstep(0.42, 0.55, r + 0.1) : steep * smoothstep(0.45, 0.6, r) * 0.6;\n"
+    "  col = mix(col, cFoam, foam * 0.8);\n"
+    "  float al = max(max(mix(0.35, 0.92, td), fr * (useDep > 0.5 ? 1.0 : 0.6)), foam * 0.9);\n"
+    "  gl_FragColor = vec4(col, al); }\n";
+static void V3WaterShaderInit(void) {
+    HGLRC rc = wglGetCurrentContext(); if (!rc) { g_wsh.state = 0; return; }
+    for (int i = 0; i < 16; i++) if (g_wshAll[i].rc == rc) { g_wsh = g_wshAll[i]; return; }
+    memset(&g_wsh, 0, sizeof g_wsh); g_wsh.rc = rc;
+    g_wsh.state = -1;
+    PFNCreateShader cs = (PFNCreateShader)(void *)wglGetProcAddress("glCreateShader"); PFNShaderSource ss = (PFNShaderSource)(void *)wglGetProcAddress("glShaderSource");
+    PFNCompileShader cm = (PFNCompileShader)(void *)wglGetProcAddress("glCompileShader"); PFNGetShaderiv gs = (PFNGetShaderiv)(void *)wglGetProcAddress("glGetShaderiv");
+    PFNCreateProgram cp = (PFNCreateProgram)(void *)wglGetProcAddress("glCreateProgram"); PFNAttachShader as = (PFNAttachShader)(void *)wglGetProcAddress("glAttachShader");
+    PFNLinkProgram lk = (PFNLinkProgram)(void *)wglGetProcAddress("glLinkProgram"); PFNGetProgramiv gp = (PFNGetProgramiv)(void *)wglGetProcAddress("glGetProgramiv");
+    PFNGetUniformLocation gu = (PFNGetUniformLocation)(void *)wglGetProcAddress("glGetUniformLocation");
+    g_wsh.use = (PFNUseProgram)(void *)wglGetProcAddress("glUseProgram"); g_wsh.u1f = (PFNUniform1f)(void *)wglGetProcAddress("glUniform1f");
+    g_wsh.u3f = (PFNUniform3f)(void *)wglGetProcAddress("glUniform3f"); g_wsh.u1i = (PFNUniform1i)(void *)wglGetProcAddress("glUniform1i");
+    if (!cs || !ss || !cm || !gs || !cp || !as || !lk || !gp || !gu || !g_wsh.use || !g_wsh.u1f || !g_wsh.u3f || !g_wsh.u1i) return;
+    unsigned int vs = cs(0x8B31 /*VERTEX*/), fs = cs(0x8B30 /*FRAGMENT*/); GLint ok = 0;
+    if (!vs || !fs) return;
+    ss(vs, 1, &kWaterVS, NULL); cm(vs); gs(vs, 0x8B81 /*COMPILE_STATUS*/, &ok); if (!ok) return;
+    ss(fs, 1, &kWaterFS, NULL); cm(fs); gs(fs, 0x8B81, &ok); if (!ok) return;
+    unsigned int pr = cp(); if (!pr) return;
+    as(pr, vs); as(pr, fs); lk(pr); gp(pr, 0x8B82 /*LINK_STATUS*/, &ok); if (!ok) return;
+    g_wsh.prog = pr;
+    g_wsh.uRip = gu(pr, "rip"); g_wsh.uScl = gu(pr, "scl"); g_wsh.uShal = gu(pr, "cShal"); g_wsh.uDeep = gu(pr, "cDeep"); g_wsh.uSolid = gu(pr, "cSolid");
+    g_wsh.uFoam = gu(pr, "cFoam"); g_wsh.uUseDep = gu(pr, "useDep"); g_wsh.uRough = gu(pr, "rough"); g_wsh.uSun = gu(pr, "sunE"); g_wsh.uTim = gu(pr, "tim");
+    g_wsh.state = 1;
+}
+static void V3WaterShaderKeep(void) {               // (store the current context's result)
+    for (int i = 0; i < 16; i++) if (g_wshAll[i].rc == g_wsh.rc || !g_wshAll[i].rc) { g_wshAll[i] = g_wsh; return; }
+    g_wshAll[15] = g_wsh;
+}
+// which water a list entry is: 1 the terrain's water (Deep), 2 muddy, 3 the ghost swamp, 4 another water surface (no depth)
+static int V3WaterType(const char *n) {
+    if (!strcmp(n, "Muddy water")) return 2;
+    if (!strcmp(n, "Ghost swamp water")) return 3;
+    if (!strcmp(n, "Water") || !strncmp(n, "Water kind ", 11)) return 1;
+    return 4;
+}
+// start drawing water of type wt with the shader (1) - or 0: not available, draw the old way. base / st: the vertex data
+static int V3WaterBegin(V3 *v, int wt, const char *base, int st) {
+    { HGLRC rc = wglGetCurrentContext(); int known = 0; for (int i = 0; i < 16; i++) if (g_wshAll[i].rc == rc && rc) known = 1;
+      V3WaterShaderInit(); if (!known && g_wsh.rc) V3WaterShaderKeep(); }
+    if (g_wsh.state != 1 || st != 28) return 0;
+    static const float W[2][4][3] = {     // the game's colours (Deep; Mud = GhostSwamp), sRGB: shallow, deep, solid, foam
+        { { 7, 131, 139 }, { 21, 47, 62 }, { 142, 229, 252 }, { 218, 218, 218 } },      // Deep: SubColor, BaseColor, SolidColor, WhiteWaveColor
+        { { 77, 69, 42 },  { 71, 53, 0 },  { 77, 69, 42 },    { 132, 102, 42 } } };     // Mud: SolidColor, BaseColor, SolidColor, WhiteWaveColor
+    const float (*c)[3] = W[wt == 2 || wt == 3];
+    g_wsh.use(g_wsh.prog);
+    g_wsh.u1i(g_wsh.uRip, 0);
+    g_wsh.u1f(g_wsh.uScl, wt == 4 ? 1.0f : TERA_WATER_REPEAT / (v->wRip > 1 ? v->wRip : 160));   // (terrain water's coordinates are world / 160)
+    g_wsh.u3f(g_wsh.uShal, c[0][0] / 255, c[0][1] / 255, c[0][2] / 255); g_wsh.u3f(g_wsh.uDeep, c[1][0] / 255, c[1][1] / 255, c[1][2] / 255);
+    g_wsh.u3f(g_wsh.uSolid, c[2][0] / 255, c[2][1] / 255, c[2][2] / 255); g_wsh.u3f(g_wsh.uFoam, c[3][0] / 255, c[3][1] / 255, c[3][2] / 255);
+    g_wsh.u1f(g_wsh.uUseDep, wt == 4 ? 0.0f : 1.0f); g_wsh.u1f(g_wsh.uRough, wt == 2 || wt == 3 ? 0.3f : 0.07f);
+    GLfloat lp[4] = { 0, 1, 0, 0 }; glGetLightfv(GL_LIGHT0, GL_POSITION, lp); g_wsh.u3f(g_wsh.uSun, lp[0], lp[1], lp[2]);
+    {   // moving ripples: the patterns drift wRsp game units a second (our choice - the game's speed isn't in its files);
+        // in pattern repeats, wrapped every 5 (the drift directions are (4,3)/5 and (-3,4)/5, so that's seamless)
+        double sec = (double)GetTickCount64() / 1000.0, size = wt == 4 ? 160.0 : (v->wRip > 1 ? v->wRip : 160);
+        g_wsh.u1f(g_wsh.uTim, (float)fmod(sec * v->wRsp / size, 5.0));
+        v->wDrew = 1;
+    }
+    glEnableClientState(GL_COLOR_ARRAY); glColorPointer(4, GL_UNSIGNED_BYTE, st, base + 16);   // (the 4th byte: the depth)
+    return 1;
+}
+static void V3WaterEnd(const char *base, int st) {
+    g_wsh.use(0); glColorPointer(3, GL_UNSIGNED_BYTE, st, base + 16);
+}
+static void V3WaterRipLabel(V3 *v) {
+    wchar_t t[160]; swprintf(t, 160, g_wsh.state == -1 ? L"Water ripple size: %.0f (needs OpenGL 2 shaders - not available)" : L"Water ripple size: %.0f units (160 at first)", v->wRip);
+    SetWindowTextW(v->wRipLbl, t);
+}
+// waterfalls (parts tinted from CmnTex_Special_Waterfall_Alb, "*Tint:..."): the texture slides down the fall with the
+// "Water ripple speed" (0.06 texture repeats a second per unit - our choice; the game's scroll isn't in its files).
+// Sets the texture matrix (call with GL_TEXTURE's matrix at identity) and notes water drawn, for the redraw timer.
+static int V3IsFallTex(V3 *v, int sl) { return sl >= 0 && sl < v->nmtex && !strncmp(v->mtexName[sl], "*Tint:", 6); }
+static void V3FallScroll(V3 *v) {
+    double sec = (double)GetTickCount64() / 1000.0;
+    float off = (float)fmod(sec * v->wRsp * 0.06, 1.0);
+    glMatrixMode(GL_TEXTURE); glLoadIdentity(); glTranslatef(0, -off, 0); glMatrixMode(GL_MODELVIEW);
+    v->wDrew = 1;
+}
+static void V3WaterSpdLabel(V3 *v) {
+    wchar_t t[160]; swprintf(t, 160, v->wRsp > 0 ? L"Water ripple speed: %.0f units a second (4 at first)" : L"Water ripple speed: still (4 at first)", v->wRsp);
+    SetWindowTextW(v->wRspLbl, t);
+}
 static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
     if (!S->ok) return;
     if (cb) {                                              // (planes in the current view's space: the part's units - drawCentre)
@@ -3434,13 +3707,14 @@ static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
     glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_NORMAL_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
     glVertexPointer(3, GL_FLOAT, st, base); glNormalPointer(GL_BYTE, st, base + 12); glColorPointer(3, GL_UNSIGNED_BYTE, st, base + 16);
     if (st == 28) glTexCoordPointer(2, GL_FLOAT, st, base + 20);
-    for (int pass = 0; pass < 2; pass++) {                 // opaque, then water (blended, not hiding what's under it)
-        // (passes: 1 = solid, 2 = water and areas, 3 = everything, 4 = water only, 8 = areas only)
-        if (pass ? !(passes & (2 | 4 | 8)) : !(passes & 1)) continue;
+    for (int pass = 0; pass < 3; pass++) {                 // opaque, then water (blended, not hiding what's under it), then waterfalls
+        // (passes: 1 = solid, 2 = water, areas and waterfalls, 3 = everything, 4 = water only, 8 = areas only, 16 = waterfalls only)
+        // (the see-through waterfalls last and once: in .234-.235 walking drew them in the areas round and the water round)
+        if (pass == 2 ? !(passes & (2 | 16)) : pass ? !(passes & (2 | 4 | 8)) : !(passes & 1)) continue;
         if (pass) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
         for (int r = 0; r < S->nrun; r++) {
             const struct V3SnapRun *R = &S->run[r];
-            if ((R->kind == 1 || R->kind == 5) != pass) continue;
+            if ((R->scroll ? 2 : R->kind == 1 || R->kind == 5) != pass) continue;     // (waterfalls: blended, after the water)
             if (R->kind == 1 && !(passes & (2 | 4))) continue;
             if (R->kind == 5 && !(passes & (2 | 8))) continue;
             if (R->kind == 5) {                                // an area: see-through sides in its list colour, stronger edges
@@ -3464,10 +3738,12 @@ static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
                 } else {
                     glTexEnvf(GL_TEXTURE_ENV, 0x8573, 1.0f); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
                     glMatrixMode(GL_TEXTURE); glLoadIdentity(); glMatrixMode(GL_MODELVIEW);
+                    if (R->scroll) V3FallScroll(v);                  // waterfalls: the texture slides down
                     if (R->alpha) { glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.4f); }
                 }
             } else { glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisable(GL_TEXTURE_2D); }
             if (R->kind == 3) glDisable(GL_LIGHTING);
+            int wsh = R->kind == 1 && V3WaterBegin(v, R->wt, base, st);      // water: the water shader (or the old way)
             if (S == &v->wBack && v->wBROk && (R->kind == 2 || R->kind == 3 || R->kind == 6)) {
                 // the far-off world's scenery: only outside the loaded squares (inside, the squares have it - or it's unticked):
                 // four pieces round the squares' rectangle, each cut by planes (in this snapshot's own space)
@@ -3487,7 +3763,9 @@ static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
                 glDisable(GL_ALPHA_TEST);
                 continue;
             }
-            if (cb && R->kind <= 1) for (int k = 0; k < 4; k++) glEnable(GL_CLIP_PLANE0 + k);
+            // (walking's tiles hold every triangle reaching into them: water - and the see-through waterfalls, else drawn
+            // twice where a fall crosses a tile edge, more solid than in the area view (.234) - is cut to the tile's square)
+            if (cb && (R->kind <= 1 || R->scroll)) for (int k = 0; k < 4; k++) glEnable(GL_CLIP_PLANE0 + k);
             // layering: the ground a little behind, see-through decals (road lines) a little in front of what they lie on
             if (R->kind == 0) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(1.5f, 6); }
             else if (R->kind == 2 && R->alpha) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.5f, -6); }
@@ -3517,6 +3795,7 @@ static void V3SnapDraw(V3 *v, struct V3Snap *S, const float *cb, int passes) {
             glDrawElements(GL_TRIANGLES, R->count, GL_UNSIGNED_INT, vbo ? (const void *)((size_t)R->first * 4) : (const void *)(S->cpuI + R->first));
             glDisable(GL_POLYGON_OFFSET_FILL);
             for (int k = 0; k < 4; k++) glDisable(GL_CLIP_PLANE0 + k);
+            if (wsh) V3WaterEnd(base, st);
             if (R->kind == 3) glEnable(GL_LIGHTING);
             glDisable(GL_ALPHA_TEST);
         }
@@ -3615,6 +3894,7 @@ static void V3WalkDrawSnaps(V3 *v) {
     }
     glStencilMask(0); glStencilFunc(GL_ALWAYS, 0, 0xFF); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
     for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 4);
+    for (int t = 0; t < 6; t++) if (v->wTile[t].s.ok) V3SnapDraw(v, &v->wTile[t].s, v->wTile[t].cb, 16);   // waterfalls: last, once
     glStencilMask(0xFF);
     if (v->wDbgBack) {                                          // B: everything drawn by the low-detail world gets a red tint
         glStencilFunc(GL_EQUAL, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
@@ -4267,8 +4547,10 @@ static void V3Render(V3 *v) {
                         glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, id);
                         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
                         if (v->tex[k].alpha) { glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.4f); } else glDisable(GL_ALPHA_TEST);
+                        if (V3IsFallTex(v, sl)) V3FallScroll(v);      // waterfalls: the texture slides down
                     } else { glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisable(GL_TEXTURE_2D); glDisable(GL_ALPHA_TEST); }
                     const uint32_t *ip2 = v->useVbo ? NULL : v->cpuIdx;
+                    if (V3IsFallTex(v, sl)) continue;                                 // waterfalls: blended, after the water (below)
                     int glow = id && sl < v->nmtex && strstr(v->mtexName[sl], "Lava");    // lava glows: not shaded
                     if (glow) glDisable(GL_LIGHTING);
                     glDrawElements(GL_TRIANGLES, v->runs[r].count, GL_UNSIGNED_INT, v->useVbo ? (const void *)((size_t)v->runs[r].first * 4) : (const void *)(ip2 + v->runs[r].first));
@@ -4309,8 +4591,22 @@ static void V3Render(V3 *v) {
                 int k = v->partTex[rm]; GLuint id = k >= 0 ? v->tex[k].id : 0; if (!id) continue;
                 glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, id);
                 const uint32_t *ip = v->useVbo ? NULL : v->cpuIdx;
+                int wsh = V3WaterBegin(v, V3WaterType(v->part.matName[rm]), base, st);   // the water shader (or the old way)
+                glDrawElements(GL_TRIANGLES, v->runs[r].count, GL_UNSIGNED_INT, v->useVbo ? (const void *)((size_t)v->runs[r].first * 4) : (const void *)(ip + v->runs[r].first));
+                if (wsh) V3WaterEnd(base, st);
+            }
+            // waterfalls (the tinted waterfall texture, see-through, sliding down): blended like the water
+            glTexEnvf(GL_TEXTURE_ENV, 0x8573, 1.0f); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); glDisable(GL_ALPHA_TEST);
+            for (int r = 0; r < v->nruns; r++) {
+                int rm = v->runs[r].mat; if (rm < VOX_MAXMAT) continue;
+                int sl = rm - VOX_MAXMAT; if (!V3IsFallTex(v, sl)) continue;
+                int k = v->mtexTex[sl]; GLuint id = k >= 0 ? v->tex[k].id : 0; if (!id) continue;
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, id);
+                V3FallScroll(v);
+                const uint32_t *ip = v->useVbo ? NULL : v->cpuIdx;
                 glDrawElements(GL_TRIANGLES, v->runs[r].count, GL_UNSIGNED_INT, v->useVbo ? (const void *)((size_t)v->runs[r].first * 4) : (const void *)(ip + v->runs[r].first));
             }
+            glMatrixMode(GL_TEXTURE); glLoadIdentity(); glMatrixMode(GL_MODELVIEW);
             glDisable(GL_BLEND); glDepthMask(GL_TRUE);
             glTexEnvf(GL_TEXTURE_ENV, 0x8573, 1.0f); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
             glDisable(GL_TEXTURE_2D); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glBindTexture(GL_TEXTURE_2D, 0);
@@ -5353,6 +5649,37 @@ static void V3ListObjectsNear(V3 *v, float wx, float wz) {
         FindClose(fh);
     } while (FindNextFileW(dh, &dd));
     if (dh != INVALID_HANDLE_VALUE) FindClose(dh);
+    for (int k = 0; k < v->npref; k++) {        // a course placed whole (Rainbow Road: Banc\Rainbow_00_Fix, at the world's own coordinates)
+        const V3Pref *pf = &v->pref[k];
+        size_t zn; unsigned char *z = VoxReadFile(pf->path, &zn); if (!z) continue;
+        size_t bn; unsigned char *b = VoxUnzstd(z, zn, &bn); free(z); if (!b) continue;
+        files++;
+        float cr = cosf(pf->ry), sr = sinf(pf->ry);
+        Byml y; BymlNode r = BymlOpen(&y, b, bn), acts = BymlGet(&y, r, "Actors");
+        for (int i = 0; i < BymlCount(&y, acts); i++) {
+            BymlNode a = BymlAt(&y, acts, i);
+            const char *nm = BymlStr(&y, BymlGet(&y, a, "Name")); if (!nm) nm = BymlStr(&y, BymlGet(&y, a, "Gyaml")); if (!nm) continue;
+            char clean[96]; { const char *sl = strrchr(nm, '/'); snprintf(clean, sizeof clean, "%s", sl ? sl + 1 : nm); char *g = strstr(clean, ".gear__"); if (g) *g = 0; } nm = clean;
+            BymlNode t = BymlGet(&y, a, "Translate");
+            float lx = BymlFloat(BymlAt(&y, t, 0), 0), ly = BymlFloat(BymlAt(&y, t, 1), 0), lz = BymlFloat(BymlAt(&y, t, 2), 0);
+            float x = pf->T[0] + lx * cr + lz * sr, yy = pf->T[1] + ly, zz = pf->T[2] - lx * sr + lz * cr;
+            float d = sqrtf((x - wx) * (x - wx) + (zz - wz) * (zz - wz)); if (d > 200) continue;
+            if (n == cap) { Hit *nh = (Hit *)realloc(h, (size_t)cap * 2 * sizeof(Hit)); if (!nh) break; h = nh; cap *= 2; }
+            Hit *o = h + n++; o->d = d; o->x = x; o->y = yy; o->z = zz; snprintf(o->name, sizeof o->name, "%s", nm);
+            {   const char *pr = BymlStr(&y, BymlGet(&y, a, "PrimitiveType")); snprintf(o->prim, sizeof o->prim, "%s", pr ? pr : ""); }
+            o->extra[0] = 0;
+            swprintf(o->file, 96, L"%ls", pf->file);
+            V3Name *e = V3NameGet(v, nm, 0); int shA; char ab[40];
+            if (!strncmp(nm, "Stage_", 6) && strstr(nm, "Ground_")) snprintf(o->kind, sizeof o->kind, "[not drawn: the low-poly copy of the island under Rainbow Road]");
+            else if (V3AreaLabel(nm, &shA, ab)) snprintf(o->kind, sizeof o->kind, e && e->ent[0] ? "[drawn: %s]" : "[not drawn: not handled by the view]", e ? e->ent : "");
+            else { char sh[VOX_MATN], kd[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh); snprintf(kd, sizeof kd, "%s", !strncmp(nm, "Stage_", 6) ? nm + 6 : sh);
+                   size_t L = strlen(kd); if (L > 3 && !strcmp(kd + L - 3, "_00")) kd[L - 3] = 0;
+                   snprintf(o->kind, sizeof o->kind, "[in the list as: Rainbow Road: %s]", kd); }
+            wchar_t mp[2400]; o->model = V3ModelPath(v, root, nm, 0, mp, 2400);
+            swprintf(o->mpath, 300, L"%ls", o->model ? mp : L"");
+        }
+        free(b);
+    }
     {   // the foliage (Foliage\<scene>\FoliageInstance.byml: trees, bushes, grass...; see V3GatherActors)
         wchar_t bf[2][200]; V3BancFolders(v, bf); const wchar_t *sc = !wcsncmp(bf[0], L"World_", 6) ? bf[0] + 6 : bf[0];
         wchar_t fp[2300]; swprintf(fp, 2300, L"%ls\\Foliage\\%ls\\FoliageInstance.byml", root, sc);
@@ -6043,6 +6370,12 @@ static void V3Layout(V3 *v) {
     if ((v->hb.ok && v->part.isModel && v->hasSkeleton) || v->hasCliffs) { MoveWindow(v->hbCb, m, y, pw, rh, TRUE); y += rh + gap; }
     if (v->hasLandmarks) { MoveWindow(v->lmCb, m, y, pw, rh, TRUE); y += rh + gap; }
     if (IsWindowVisible(v->propCb)) { MoveWindow(v->propCb, m, y, pw, rh, TRUE); y += rh + gap; }
+    if (IsWindowVisible(v->wRipSl)) {                     // terrain water: the ripple pattern's size
+        MoveWindow(v->wRipLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->wRipSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+        MoveWindow(v->wRspLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->wRspSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
     if (IsWindowVisible(v->csl)) {                        // the collectibles' size
         MoveWindow(v->cslbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
         MoveWindow(v->csl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
@@ -6292,6 +6625,15 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         v->wDetSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WDET);
         SendMessageW(v->wDetSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, V3_NWALKDET - 1)); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, 1);
         ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE);
+        v->wRipLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WRIPLBL);          // terrain water: the ripple pattern's size (20-400, steps of 10)
+        v->wRipSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 0, V3_WRIP);
+        SendMessageW(v->wRipSl, TBM_SETRANGE, TRUE, MAKELPARAM(2, 40)); SendMessageW(v->wRipSl, TBM_SETPOS, TRUE, 16); v->wRip = TERA_WATER_REPEAT;
+        ShowWindow(v->wRipLbl, SW_HIDE); ShowWindow(v->wRipSl, SW_HIDE); V3WaterRipLabel(v);
+        v->wRspLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WRSPLBL);          // terrain water: the ripples' speed (0 = still - 20 units a second)
+        v->wRspSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 0, V3_WRSP);
+        SendMessageW(v->wRspSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 20)); SendMessageW(v->wRspSl, TBM_SETPOS, TRUE, 4); v->wRsp = 4;
+        ShowWindow(v->wRspLbl, SW_HIDE); ShowWindow(v->wRspSl, SW_HIDE); V3WaterSpdLabel(v);
+        SetTimer(v->wnd, V3_TIMER_WATER, 33, NULL);
         v->wHgtLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_WHGTLBL);
         v->wHgtSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_WHGT);
         SendMessageW(v->wHgtSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 18)); SendMessageW(v->wHgtSl, TBM_SETPOS, TRUE, 5); v->wHeight = 3.5f;
@@ -6436,6 +6778,9 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd, V3_TIMER_CSIZE);
             if (v->ncinst && v->collWant >= 1 && v->collWant != V3CollS(v)) { v->collScale = v->collWant; V3CollApplyScale(v); V3CollTexts(v); V3RequestBuild(v); }
         } else if (wp == V3_TIMER_REBUILD) { KillTimer(hwnd, V3_TIMER_REBUILD); if (v->nAtt && V3UpdateTieNeck(v)) V3FillList(v); V3RequestBuild(v); }
+        else if (wp == V3_TIMER_WATER && v) {      // moving ripples: redraw while water was on screen and the window is shown
+            if (v->wRsp > 0 && v->wDrew && !v->thread && IsWindowVisible(hwnd) && !IsIconic(hwnd)) { v->wDrew = 0; InvalidateRect(v->gl, NULL, FALSE); }
+        }
         else if (wp == V3_TIMER_FX && v->fxOn) { if (!(v->animSel > 0 && v->playing)) InvalidateRect(v->gl, NULL, FALSE); }
         else if (wp == V3_TIMER_ANIM && v->animSel > 0 && v->playing) {
             float f = v->animF0 + (GetTickCount() - v->animT0) * v->fps / 1000.0f;   // 1x = 60 frames a second (the game's rate)
@@ -6464,6 +6809,8 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ShowWindow(v->prbCb, V3IsTerrainGrid(v) && v->nprb ? SW_SHOW : SW_HIDE); SendMessageW(v->prbCb, CB_SETCURSEL, v->prbSel, 0); V3ProbeRange(v);
         ShowWindow(v->cslbl, v->ncinst ? SW_SHOW : SW_HIDE); ShowWindow(v->csl, v->ncinst ? SW_SHOW : SW_HIDE); V3CollSliderSync(v); V3Layout(v);
         v->hasWater = v->hasCliffs = v->hasLandmarks = 0;           // terrain: every kind of thing is its own entry in the list (no tick boxes)
+        {   int tw = V3IsTerrainGrid(v); ShowWindow(v->wRipLbl, tw ? SW_SHOW : SW_HIDE); ShowWindow(v->wRipSl, tw ? SW_SHOW : SW_HIDE); V3WaterRipLabel(v);
+            ShowWindow(v->wRspLbl, tw && g_wsh.state != -1 ? SW_SHOW : SW_HIDE); ShowWindow(v->wRspSl, tw && g_wsh.state != -1 ? SW_SHOW : SW_HIDE); V3WaterSpdLabel(v); }
         if (V3IsTerrainGrid(v)) {
             ShowWindow(v->clothCb, SW_HIDE); ShowWindow(v->hbCb, SW_HIDE); ShowWindow(v->lmCb, SW_HIDE); ShowWindow(v->propCb, SW_HIDE);
             int fresh = !v->nkeep && !v->nkg && !v->walk;     // just opened: the world view's own starting ticks
@@ -6473,6 +6820,9 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     char g[VOX_MATN]; V3MatCat(v, k, g);           //  world view: everything except Area; walking: also Marker only
                     const char *n = v->part.matName[k];            //  P-switches, ? panels, special coins (a saved view / point puts its own back)
                     v->hidden[k] = !strcmp(g, "Area") ? 1 : (v->walk && !strcmp(g, "Marker")) ? (unsigned char)(strcmp(n, "Marker: PSwitch") && strcmp(n, "Marker: HatenaPanel") && strcmp(n, "Marker: SpecialCoin")) : 0;
+                    // Rainbow Road's things without a model (SystemObj_RainbowChangeSpace: huge boxes - the switch between the world
+                    // and the course; seen as solid blue sheets and blocks around the track in .221): unticked at first, like Marker
+                    if (!strncmp(n, "Rainbow Road: marker ", 21)) v->hidden[k] = 1;
                 }
                 for (int q = 0; q < v->nkeep; q++) if (!strcmp(v->keepName[q], v->part.matName[k])) { v->hidden[k] = v->keepHidden[q]; break; }   // as it was before reloading
                 if (v->kgName) {                                   // a whole group ticked / unticked: everything in it follows (also things met before)
@@ -6592,6 +6942,18 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if ((HWND)lp == v->frame && v->animSel > 0) {
             v->playing = 0; v->animFrame = (float)SendMessageW(v->frame, TBM_GETPOS, 0, 0);
             V3ApplyPose(v); V3UpdateFrameLabel(v); InvalidateRect(v->gl, NULL, FALSE);
+            return 0;
+        }
+        if ((HWND)lp == v->wRipSl) {                       // terrain water: the ripple size (at once - the shader reads it every frame)
+            int pos = (int)SendMessageW(v->wRipSl, TBM_GETPOS, 0, 0); if (pos < 2) pos = 2; if (pos > 40) pos = 40;
+            v->wRip = pos * 10.0f; V3WaterRipLabel(v); InvalidateRect(v->gl, NULL, FALSE);
+            if (LOWORD(wp) != TB_THUMBTRACK) SetFocus(v->gl);
+            return 0;
+        }
+        if ((HWND)lp == v->wRspSl) {                       // terrain water: the ripples' speed (0 = still: no redrawing for it)
+            int pos = (int)SendMessageW(v->wRspSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > 20) pos = 20;
+            v->wRsp = (float)pos; V3WaterSpdLabel(v); InvalidateRect(v->gl, NULL, FALSE);
+            if (LOWORD(wp) != TB_THUMBTRACK) SetFocus(v->gl);
             return 0;
         }
         if ((HWND)lp == v->wSpdSl) {                       // walking: the speed
@@ -6798,6 +7160,8 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             wglMakeCurrent(v->dc, v->rc);
             if (v->useVbo && v->vbo[0]) { v->glDeleteBuffers_(2, v->vbo); v->vbo[0] = v->vbo[1] = 0; }
             for (int t = 0; t < v->ntex; t++) { if (v->tex[t].id) glDeleteTextures(1, &v->tex[t].id); free(v->tex[t].rgba); v->tex[t].rgba = NULL; v->tex[t].id = 0; }
+            for (int i = 0; i < 16; i++) if (g_wshAll[i].rc == v->rc) memset(&g_wshAll[i], 0, sizeof g_wshAll[i]);   // (its water shader goes with it)
+            if (g_wsh.rc == v->rc) memset(&g_wsh, 0, sizeof g_wsh);
             wglMakeCurrent(NULL, NULL); wglDeleteContext(v->rc); v->rc = NULL;
         }
         v->haveMesh = 0;

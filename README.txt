@@ -480,8 +480,25 @@ VOXEL TERRAIN
     buildings...) is listed as "Scenery (other)" and starts hidden.
     Cliffs, ice and courses are drawn with their own textures (made small: 256 pixels in full-detail areas, 64 on
     the whole map). Models and textures are loaded on all the processor's cores at once.
-    Water, muddy water and ghost swamp water carry the game's water ripple texture (Tex\CmnTex_Tera_Water_Emm)
-    and are slightly see-through, so shallow shores show through. The placed special surfaces (lava pools,
+    Water, muddy water and ghost swamp water are drawn by a water shader built from the game's own water
+    (Model\TeraModel_Water.TeraWater and Gyml\TerrainWaterMaterialGParam\Deep / Mud / GhostSwamp), lighting aside:
+    the colour by depth (the game's SubColor in the shallows to its BaseColor in deep water), see-through in the
+    shallows and more solid deeper, its SolidColor at low angles, a sun glint from its roughness, foam
+    (WhiteWaveColor) where it's under about 1.2 m deep, and the game's ripple texture (Tex\CmnTex_Tera_Water_Emm)
+    bending the surface. The ripple size isn't in the game's files: "Water ripple size" (20-400 units, 160 at
+    first) changes it at once. The ripples move: two copies of the pattern drift in different directions at
+    "Water ripple speed" (0-20 units a second, 4 at first; the game's speed isn't in its files either).
+    Waterfalls drawn with the game's waterfall texture (e.g. BigWaterfallJG000_B, ShortWaterFall) slide their
+    texture down the fall at a rate set by the same slider (our choice too). They're see-through like water (the
+    teal about half solid, the white streaks solid - our choice; the game's blending isn't in its files). While water
+    is on screen the view redraws about 30 times a second for this - set the speed to "still" (0) to stop that on
+    slower computers. The depth range, see-through amounts and foam depth are our choices too. Other
+    water surfaces (waterfalls, the game's placed water models) get the same game colours as if 4 m deep (our
+    choice: they have no depth), with the gloss following their own slope. A stage's or landmark's river surface
+    (a part whose colour texture is one of the game's WaterSurface textures, e.g. Stage: RaftingRiver_A's river) is
+    listed on its own as "<entry> (WaterSurface)" and drawn the same way - its own texture is the riverbed the game
+    draws its water over. Graphics
+    without OpenGL 2 shaders get the older water (colour x ripple, slightly see-through). The placed special surfaces (lava pools,
     chocolate...) use their models' own textures (lava: Tex\CmnTex_Special_Lava_Alb).
     "Ground: ..." (under Low resolution) colours the ground by another of the terrain's layers instead of the
     game's colours, to see where its values are high or low: sky_bounce red (baked sun shadow: 255 = sunlit, offset
@@ -532,6 +549,13 @@ VOXEL TERRAIN
     more) and the rare ones (30 or fewer in the world); the first whole-map opening loads every model once to
     measure it, so it takes longer. Objects without a model: a small magenta diamond, "Markers: <kind>" (full-detail
     areas, unticked at first). Objects merged into the ground pieces (Gridify) are drawn with those.
+  Rainbow Road (Mario Kart World): drawn at its real place in the world, 2,800-5,100 m up, starting just above the
+    long bay bridge and climbing out over the bay (x about -1,400 to 800, z 3,200 to 7,700). The game places it
+    whole: WorldResident's SystemObj_PointRainbow_01 (no position, so the middle of the map) loads
+    Banc\Rainbow_00_Fix.bcett.byml.zs, so that file's coordinates are the world's. Everything in it is one group in
+    the list, "Rainbow Road" - untick the group to hide it. Its things without a model ("Rainbow Road: marker ...",
+    e.g. SystemObj_RainbowChangeSpace - huge boxes, the switch between the world and the course) start unticked. Its Stage_RainbowGround_A (a full-size, low-poly copy of
+    the island, what the old fall-off glitch landed you on) isn't drawn, as it would cover the real island.
   Areas: the invisible zones (both folders) drawn as see-through boxes / balls (their Scale is half the size):
     "Area: WorldEndArea" (SystemObj_WorldEndArea - drive in and you're put back; ticked at first),
     rescue, valley / drop, keep out, course, glide and shallow-water areas (unticked at first); any other area

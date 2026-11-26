@@ -71,6 +71,7 @@ typedef struct {
     uint16_t *ttex;              // height grid: per triangle, the model texture slot of placed scenery (0xFFFF = none), or NULL
     uint32_t waterKindN[256];    // terrain: water cells per kind byte (the .water.extm's byte 7) in the tiles loaded
     int gridW;                   // tri mesh that is a square height grid (gridW x gridW points, rows of x): drawn smooth, vertices shared
+    float *wdep; size_t wdep0, nwdep; // terrain: the water's depth (water height - ground height) at its vertices wdep0 .. wdep0+nwdep-1
     char err[300];
 } VoxPart;
 
@@ -89,7 +90,7 @@ typedef struct {
 } VoxMesh;
 
 static void VoxFreePart(VoxPart *p) {
-    free(p->tv); free(p->ti); free(p->tmat); free(p->tn); free(p->tuv);
+    free(p->tv); free(p->ti); free(p->tmat); free(p->tn); free(p->tuv); free(p->wdep);
     free(p->skName); free(p->skParent); free(p->skBind); free(p->skEuler); free(p->skBindW); free(p->vBone); free(p->vW);
     free(p->lv); free(p->lmat); free(p->lbone); free(p->gcol); free(p->ttex);
     for (int k = 0; k < p->nkeys; k++) free(p->keys[k].d);
@@ -896,6 +897,27 @@ static void BfMatOption(const unsigned char *b, size_t n, size_t mt, const char 
         return;
     }
 }
+// a material's shader parameter (float / float2-4; e.g. "const_color0") -> up to 4 floats; returns how many (0 = none).
+// (shader assign + 0x20: entries of 0x18 bytes - name, u16 offset, u8 type (0xC float .. 0xF float4); values: FMAT + 0x58)
+static int BfMatParam(const unsigned char *b, size_t n, size_t mt, const char *key, float *out) {
+    if (mt + 0x60 > n) return 0;
+    uint64_t si = BfU64(b + mt + 0x10); if (!si || si + 8 > n) return 0;
+    uint64_t sa = BfU64(b + si); if (!sa || sa + 0x30 > n) return 0;
+    uint64_t pa = BfU64(b + sa + 0x20), pd = BfU64(b + sa + 0x28), data = BfU64(b + mt + 0x58);
+    if (!pa || !pd || !data || pd + 8 > n) return 0;
+    uint32_t cnt = VoxRd32(b + pd + 4); if (cnt > 1024) return 0;
+    size_t kl = strlen(key);
+    for (uint32_t i = 0; i < cnt; i++) {
+        size_t e = pa + 0x18 * (size_t)i; if (e + 0x18 > n) return 0;
+        uint64_t sp = BfU64(b + e + 8); if (!sp || sp + 2 + kl > n) continue;
+        if (VoxRd16(b + sp) != kl || memcmp(b + sp + 2, key, kl)) continue;
+        unsigned off = VoxRd16(b + e + 16), ty = b[e + 18]; int k = ty >= 0xC && ty <= 0xF ? (int)(ty - 0xB) : 0;
+        if (!k || data + off + 4 * (size_t)k > n) return 0;
+        for (int c = 0; c < k; c++) { uint32_t u = VoxRd32(b + data + off + 4 * c); memcpy(&out[c], &u, 4); }
+        return k;
+    }
+    return 0;
+}
 // one attribute value -> up to 4 floats; returns component count (0 = format not handled)
 static int BfAttr(const unsigned char *b, size_t n, size_t at, unsigned fmt, float *o) {
     unsigned lay = fmt & 0xFF, typ = fmt >> 8;
@@ -1223,13 +1245,50 @@ static int VoxLoadBfres(VoxPart *p, const VOXCHAR *path) {
                             else snprintf(p->texAlb[id], 128, "%s", p->texEmm[id][0] ? p->texEmm[id] : "*Dark");
                         }
                     }
+                    // Rainbow Road's Sky Island river (Stage_RainbowSkyIsland_A, Mt_Water_01): its colour and glow textures
+                    // (CmnTex_Stage_RainbowRoad_Water_00_Alb / _Emm) are smooth bands across the river, repeated ~60 x 90 times
+                    // over it - stripes (.221-.222). The game breaks them up with its water shader's own patterns,
+                    // CmnTex_Special_RainbowRiver_1 (diagonal flow streaks) and _2 (sparkle dots): "*RainbowRiver:<alb>^<glow>"
+                    // = the colour texture's average blue, the glow's average added through the streaks, the sparkles on top
+                    // (.223 borrowed the Aurora's look instead)
+                    if (strstr(p->matName[id], "Water") && !strcmp(p->texAlb[id], "CmnTex_Stage_RainbowRoad_Water_00_Alb")) {
+                        char t2[128]; snprintf(t2, sizeof t2, "*RainbowRiver:%s^%s", p->texAlb[id], p->texEmm[id][0] ? p->texEmm[id] : p->texAlb[id]);
+                        snprintf(p->texAlb[id], 128, "%s", t2);
+                    }
+                    // waterfalls (MKW CmnObj_BigWaterfallJG000_B: Mt_Fall / Mt_FallSeal): the colour texture
+                    // CmnTex_Special_Waterfall_Alb is a grey pattern, and the colour is worked out in the shader graph
+                    // (drive_albedo_color 210) with the material's const_color0 (dark teal) and const_color1 (0.7 white):
+                    // "*Tint:<tex>^<c0>^<c1>" - c0 where the pattern is dark, c1 where it's bright (the mix is our reading of
+                    // the graph; the colours are the game's, linear -> sRGB). (Drawn grey-white before .228)
+                    if (strstr(p->texAlb[id], "Waterfall_Alb") && !strchr(p->texAlb[id], '~')) {
+                        char ac[16]; BfMatOption(b, n, mt, "drive_albedo_color", ac, sizeof ac);
+                        float c0[4] = { 0 }, c1[4] = { 0 };
+                        if (!strcmp(ac, "210") && BfMatParam(b, n, mt, "const_color0", c0) >= 3 && BfMatParam(b, n, mt, "const_color1", c1) >= 3) {
+                            unsigned s0[3], s1[3];
+                            for (int c = 0; c < 3; c++) {
+                                float l0 = c0[c] < 0 ? 0 : c0[c] > 1 ? 1 : c0[c], l1 = c1[c] < 0 ? 0 : c1[c] > 1 ? 1 : c1[c];
+                                float g0 = l0 <= 0.0031308f ? l0 * 12.92f : 1.055f * powf(l0, 1 / 2.4f) - 0.055f;
+                                float g1 = l1 <= 0.0031308f ? l1 * 12.92f : 1.055f * powf(l1, 1 / 2.4f) - 0.055f;
+                                s0[c] = (unsigned)(g0 * 255 + 0.5f); s1[c] = (unsigned)(g1 * 255 + 0.5f);
+                            }
+                            char t2[128]; snprintf(t2, sizeof t2, "*Tint:%s^%02X%02X%02X^%02X%02X%02X", p->texAlb[id], s0[0], s0[1], s0[2], s1[0], s1[1], s1[2]);
+                            snprintf(p->texAlb[id], 128, "%s", t2);
+                        }
+                    }
+                    // Rainbow Road's clouds (Stage_RainbowCloud_*: Mt_CloudA/B/D, no colour texture, drive_albedo_color 211 = worked
+                    // out in the shader from lighting textures + a colour table; glow CmnTex_Special_RainbowRoadCloud_Emm): white,
+                    // as in the game ("*Cloud"; they took the list's own colour - blue - in .221)
+                    if (!p->texAlb[id][0] && strstr(p->texEmm[id], "RainbowRoadCloud")) snprintf(p->texAlb[id], 128, "*Cloud");
                     // the Aurora track's road (CmnObj_SpecialSurfaceAurora000: Mt_Water, no colour texture, its glow is
                     // CmnTex_Special_AuroraRiver_Emm - a dark band with cyan edges): bright cyan water with the glow on top,
                     // as in the game ("*Aurora:<glow>"; .208-.212 drew the glow alone - stripes; .213-.217 the plain water look)
                     if (!p->texAlb[id][0] && strstr(p->matName[id], "Water") && !strcmp(p->texEmm[id], "CmnTex_Special_AuroraRiver_Emm"))
                         // (with the speckled glow of the water below it, CmnTex_Special_AuroraRiver_UnderWater_Emm - the
                         // road is see-through in the game; its own band glow gave stripes all along the road in .218)
-                        snprintf(p->texAlb[id], 128, "*Aurora:CmnTex_Special_AuroraRiver_UnderWater_Emm");
+                        // (built from its files: its colour is black (drive_albedo_color 900) and every glow is at strength 202
+                        // (x2.2); the water layers below glow with CmnTex_Special_AuroraRiver_UnderWater_Emm, its own glow is
+                        // added through the water shader's flow streaks, its sparkles on top - see V3ReadTex "*Aurora:")
+                        snprintf(p->texAlb[id], 128, "*Aurora:CmnTex_Special_AuroraRiver_UnderWater_Emm^%s", p->texEmm[id]);
                 }
                 p->partBone[id] = (short)(W && bone < nb && mi == 0 && nModels == 1 ? bone : -1);
                 // parts on a hidden bone (alternative eyelids, mouths...) start hidden, as in the game
@@ -2443,6 +2502,7 @@ static int VoxLoadTerrainRegion(VoxPart *p, const VOXCHAR *tscbPath, int grid, f
             if (ntm) p->tmat = ntm;
             if (ntv && nti && ntm) {
                 static const char *wname[4] = { "Water", "Muddy water", "Lava", "Ghost swamp water" };
+                float *wd = (float *)calloc(ncell * 4 + 1, sizeof(float));
                 int wid[256]; for (int k = 0; k < 256; k++) wid[k] = -1;
                 size_t nv = nv0, nt = nt0;
                 for (int z = 0; z < CG; z++) for (int x = 0; x < CG; x++) {
@@ -2453,6 +2513,7 @@ static int VoxLoadTerrainRegion(VoxPart *p, const VOXCHAR *tscbPath, int grid, f
                         int vx = x + k % 2, vz = z + k / 2;
                         float *v = p->tv + (nv + k) * 3;
                         v[0] = ox + vx * cs * step; v[1] = cw[(size_t)vz * CG1 + vx] / 65535.0f * mh; v[2] = oz + vz * cs * step;
+                        if (wd) wd[nv + k - nv0] = v[1] - H[(size_t)(vz * cs) * G1 + vx * cs] / 65535.0f * mh;   // (depth: for the water shader)
                     }
                     uint32_t a = (uint32_t)nv, bb = a + 1, c = a + 2, e = a + 3;
                     p->ti[nt * 3] = a; p->ti[nt * 3 + 1] = c; p->ti[nt * 3 + 2] = bb; p->tmat[nt++] = (uint16_t)wid[kind];
@@ -2460,6 +2521,7 @@ static int VoxLoadTerrainRegion(VoxPart *p, const VOXCHAR *tscbPath, int grid, f
                     nv += 4;
                 }
                 p->ntv = nv; p->nti = nt; nWaterTri = nt - nt0;
+                free(p->wdep); p->wdep = wd; p->wdep0 = nv0; p->nwdep = wd ? nv - nv0 : 0;
                 // texture coordinates for the water's ripple texture: world-based, one repeat per TERA_WATER_REPEAT units
                 float *tu = (float *)calloc((p->ntv + 1) * 2, sizeof(float));
                 if (tu) { for (size_t i = nv0; i < p->ntv; i++) { tu[i * 2] = p->tv[i * 3] / TERA_WATER_REPEAT; tu[i * 2 + 1] = p->tv[i * 3 + 2] / TERA_WATER_REPEAT; }
@@ -2543,6 +2605,10 @@ static int VoxBuildTriMesh(const VoxPart *p, VoxMesh *m, const unsigned char *hi
                 if (p->ttex && p->ttex[t] != 0xFFFF) { rgb[0] = rgb[1] = rgb[2] = 255; }      // textured: the texture gives the colour
                 for (int k = 0; k < 3; k++) { uint32_t vi = p->ti[t * 3 + k]; m->col[vi * 4] = rgb[0]; m->col[vi * 4 + 1] = rgb[1]; m->col[vi * 4 + 2] = rgb[2]; m->col[vi * 4 + 3] = (unsigned char)mat; }
             }
+            // the terrain water's depth for the water shader, in the 4th colour byte (0.25 m steps, to 63.75 m) - after the
+            // loop above, which puts the material there for every vertex
+            if (p->wdep) for (size_t i = p->wdep0; i < p->wdep0 + p->nwdep && i < p->ntv; i++) {
+                float d = p->wdep[i - p->wdep0] * 4; m->col[i * 4 + 3] = (unsigned char)(d < 0 ? 0 : d > 255 ? 255 : d + 0.5f); }
         }
         int haveTerr = 0; for (int k = 0; k < p->nmat && k < VOX_MAXMAT; k++) if (p->terrMat[k] >= 0) haveTerr = 1;
         if (haveTerr && p->terrWorld[2] > 0) {             // ground textures: world-based texture coordinates, triangles grouped by material
