@@ -1,5 +1,4 @@
 ns2dig - Nintendo Switch 2 game RomFS extractor and browser
-(Donkey Kong Bananza, Mario Kart World; formerly "ns2digger" and before that "Alsarc Dump")
 
 DEMO
     The "demo" folder beside ns2dig.exe is a tiny made-up world (an island with a mountain in a sea) in the file
@@ -33,6 +32,7 @@ BOOKMARKS
   scan's files (other games: by the program id in exefs\main.npdm), whatever the scan is called.
 
 EXTRACT
+  If your ROM dump is in NUP format then use https://github.com/a55uka/nup to extract it first.
   Choose a RomFS folder, or the top folder of a dump (base, updates and dlc are all
   scanned into one tree),
   type a scan name (e.g. "Update" or "DLC"), click Extract. Each scan is saved in
@@ -460,10 +460,21 @@ VOXEL TERRAIN
     Untick materials in the list to hide them (e.g. hide grass and soil to see what's underneath).
     "Cut off the top" slices the part at a height so you can look inside.
     "Low resolution" is ticked when a view opens so it loads quickly; untick it for full detail.
+    Terrain views have a "Resolution" slider instead, with three steps (it loads again when you let go; kept by Save):
+      low   (the default) - quick to open;
+      high  - the finer ground (what unticking "Low resolution" used to do);
+      full  - on the whole map, high plus every object: the small, common ones (grass, bushes, small props),
+              the markers, the fine ground pieces and the stages' / landmarks' full models instead of their lighter
+              far versions - the same as walking with 16000 x 16000 full detail (about 6,250 textures, 1.1 GB).
+              Slower to open. In an area view full is the same as high (areas already load everything).
+    It isn't shown while walking (walking loads full detail around you). While a view is loading, the "Low resolution"
+    box and "Cut off the top" are hidden (terrain views keep the Resolution slider: moving it stops the load and
+    starts the new resolution at once) and the buttons (Controls, Reset, Top, Save, the exports, Show /
+    Hide all, Walk the world...) are greyed out until it's done.
     Mario Kart World: right-click TerrainArc\<scene>.tscb.json -> "Open 3D view of the whole terrain" stitches
-    the terrain tiles into one landscape (low resolution: the 21 biggest tiles; untick for 85 smaller ones).
+    the terrain tiles into one landscape (low resolution: the 21 biggest tiles; high / full: 85 smaller ones).
     Right-click the ground in it -> "Open this area in full detail": a new view of the 1,000 x 1,000 units around
-    that spot, built from the smallest tiles there (low resolution: a point every 1 unit; untick: every 0.5).
+    that spot, built from the smallest tiles there (low resolution: a point every 1 unit; high / full: every 0.5).
     The ground is coloured with the game's own colour maps (each tile's color_mul2 layer, which every tile size
     has down to the smallest; albedo_far where it's missing), with each ground material's detail texture (grass,
     gravel, sand... from Tex\CmnTex_Tera_Product_Proc_Alb.bntx.zs) laid over it - visible when you zoom in close.
@@ -500,7 +511,7 @@ VOXEL TERRAIN
     draws its water over. Graphics
     without OpenGL 2 shaders get the older water (colour x ripple, slightly see-through). The placed special surfaces (lava pools,
     chocolate...) use their models' own textures (lava: Tex\CmnTex_Special_Lava_Alb).
-    "Ground: ..." (under Low resolution) colours the ground by another of the terrain's layers instead of the
+    "Ground: ..." (under the resolution slider) colours the ground by another of the terrain's layers instead of the
     game's colours, to see where its values are high or low: sky_bounce red (baked sun shadow: 255 = sunlit, offset
     like a cast shadow), green (baked night / artificial light, stored inverted: low = lit by lamps or headlights;
     underwater ground = 0), blue (baked occlusion from placed objects: low at tree bases, building footings, under
@@ -545,15 +556,59 @@ VOXEL TERRAIN
   Everything else placed in Banc\World_Game03\*.bcett and Banc\World_Game03-Free\*.bcett (free roam's objects:
     coins, item boxes...; an object at the same spot in both is drawn once) that has a model: CmnObj_ objects as
     "Props: <kind>" ("Props: Coin", "Props: StreetLight"...), any other kind as "Other: <kind>" ("Other: EffectObj
-    WarioStadiumEngineSteam"...). Full-detail areas: all of them. The whole map: the large ones (25 m across or
-    more) and the rare ones (30 or fewer in the world); the first whole-map opening loads every model once to
+    WarioStadiumEngineSteam"...). Full-detail areas and the whole map at full resolution: all of them. The whole
+    map at low / high resolution: the large ones (25 m across or more) and the rare ones (30 or fewer in the world); the first whole-map opening loads every model once to
     measure it, so it takes longer. Objects without a model: a small magenta diamond, "Markers: <kind>" (full-detail
     areas, unticked at first). Objects merged into the ground pieces (Gridify) are drawn with those.
+  While walking, the list holds everything in the tiles loaded around you (not only the last one to load).
+  Collectable (Mario Kart World): every P-switch, ? panel and Peach medallion is its own entry, in three groups -
+    Collectable > P-Switch / ? Panel / Peach medallion > "012 at -2294, 3317" (its number in the game's list
+    Gyml\FreerunCollectionListGParam\PSwitch / HatenaPanel / SpecialCoin, then where it is). Tick one, a group, or the
+    whole Collectable group. One inside an island is drawn only inside the drawn island, as the island's own model
+    (MissionGate002_S for Choco Mountain's and ShyGuyBazaar_00's P-switches, Coin001_A for the medallion in
+    ShyGuyBazaar_01), listed once as "NNN in <island>" - so the groups count as the game does (394 P-switches,
+    150 ? panels, 200 medallions). Hovering an entry gives its position and mission or sticker.
+  The list's groups can hold groups of their own (a second level, opened with its own arrow; its tick switches
+    everything in it):
+      Object: AccelRing, Airship, Audience, Citizen, Curtain, Dash, Fence, Flag, Flower, FoodShop, Geyser, Glide,
+        Guardrail, Jump, Lamp, LapGate, Mob (cars, planes and boats), Plant, Start, StreetLight, TrafficSign,
+        Trampoline, Tree, Water - everything whose name starts so.
+      Stage: courses sharing a name up to the first "_" (WestCity_A to _F, BigBridge_A to _D), and Rainbow Road.
+      Surface: the parts of one surface object (LavaLake000_F - ...).
+      Scenery: pieces sharing a name up to the first digit (Rock003_A, Rock012_B -> Rock).
+      Island: one group per island (below).
+    Except for Object's list, Rainbow Road and the islands, a group of its own is made only when 2 or more share it.
+  Islands (Mario Kart World): the small areas you reach through a tunnel (Banc\Island_<name>.bcett.byml.zs, the _Fix
+    version when there is one - e.g. Choco Mountain's and Shy Guy Bazaar's, each with a P-switch inside). Each tunnel's
+    sensor in WorldResident names its IslandInfo, which names the island's file; the objects inside use the island's
+    own coordinates (its middle near 0, 0, 0).
+    In the game an island is a scene of its own, loaded when you go through the tunnel and never part of the world, so
+    there is no place in the world to read for it. Where it's drawn here is OUR choice: first under its tunnel
+    entrance, its highest point 60 m below the entrance, then moved by hand (by eye, walking the world with
+    collisions off) so each sits sensibly under its tunnel and the ground around it:
+        Island                 Tunnel entrance (x, height, z)   Moved by hand
+        StormClouds_00         4796, 901, 4537                  down 25
+        KoopaTroopaBeach_00    -91, 234, 4405                   none
+        ShyGuyBazaar_00        -6576, 251, -209                 170 east (towards x 0), down 13
+        ChocoMountain_00       -1919, 422, -95                  down 96
+        ShyGuyBazaar_01        -6606, 251, -179                 170 south (towards z 0), down 13, turned 90
+                                                                degrees clockwise (seen from above)
+    The two Shy Guy Bazaar islands have entrances only 42 m apart, so they were moved apart. An island with both an
+    entrance and an exit can't line up with both tunnels in the world - it was never designed to sit there - so only
+    the heights and these moves were set; islands aren't otherwise turned to match their tunnels. A turned island
+    turns everything in it about its own middle, each thing's own rotation with it.
+    In the list they're two levels deep: the Island group holds one group per island, and each island's group holds
+    its things, one entry per kind (coins, crates, its room, and things with no model such as
+    SystemObj_ActorGroup_00 - a game-logic object linking a stack of three crates - drawn as small diamonds). All
+    unticked at first, also when you start walking - tick one, then fly down under the entrance; an island's tooltip
+    gives the entrance's position and the height its origin is drawn at. Things with no model and small things only
+    load at high or full resolution, or while walking. A P-switch or medallion inside an island is listed under
+    Collectable (below), not under its island.
   Rainbow Road (Mario Kart World): drawn at its real place in the world, 2,800-5,100 m up, starting just above the
     long bay bridge and climbing out over the bay (x about -1,400 to 800, z 3,200 to 7,700). The game places it
     whole: WorldResident's SystemObj_PointRainbow_01 (no position, so the middle of the map) loads
     Banc\Rainbow_00_Fix.bcett.byml.zs, so that file's coordinates are the world's. Everything in it is one group in
-    the list, "Rainbow Road" - untick the group to hide it. Its things without a model ("Rainbow Road: marker ...",
+    the list, Stage > Rainbow Road - untick that group to hide it. Its things without a model ("marker ...",
     e.g. SystemObj_RainbowChangeSpace - huge boxes, the switch between the world and the course) start unticked. Its Stage_RainbowGround_A (a full-size, low-poly copy of
     the island, what the old fall-off glitch landed you on) isn't drawn, as it would cover the real island.
   Areas: the invisible zones (both folders) drawn as see-through boxes / balls (their Scale is half the size):
@@ -577,7 +632,7 @@ VOXEL TERRAIN
     A view can have up to 4096 entries (was 255), names up to 63 characters.
   In terrain views everything is its own entry in the materials list (ground, water, cliffs, courses, scenery,
     landmarks, each kind of prop, areas) - tick or untick any of them; the choices are kept when the view
-    reloads (next area, low resolution, layers). Choosing a ground layer shows just the ground and the sea.
+    reloads (next area, resolution, layers). Choosing a ground layer shows just the ground and the sea.
   Full-detail areas have an arrow labelled N, S, E or W just beyond each edge: click one to load the next area in the same window (same view and
     choices).
   "Controls" opens a window listing the mouse and keyboard controls; it can stay open. At the bottom left: the
@@ -627,8 +682,9 @@ VOXEL TERRAIN
   The left-hand panel can be made wider or narrower by dragging the gap between it and the view; its width and the
     list's column widths are kept with a saved view. "Controls" (beside Reset) opens the controls window.
   "Save" (beside Reset and Top) keeps how a 3D view looks - the camera (zoom, angle, position), the options
-    (resolution / textures, ground layer, probes, sounds, animation, colours, check boxes, list order), the cut and
-    every ticked / unticked list entry - in saved_views\ beside ns2dig.exe, one file per object or area. Opening
+    (resolution / textures, ground layer, probes, sounds, animation, colours, check boxes, list order), the sliders
+    (cut, collectibles' size, water ripple size and speed, a paused animation's frame) and every ticked / unticked
+    list entry - in saved_views\ beside ns2dig.exe, one file per object or area. Opening
     that object or area again shows it exactly like that once it has loaded (nothing saved: the usual start). Closing
     a window with X after changing a saved view asks whether to save over it.
   "Top" (or T) looks straight down on anything in the 3D view (terrain maps: the world's square in the
@@ -655,10 +711,14 @@ VOXEL TERRAIN
     "Collisions (C)" (on at first; C turns it on / off): what's drawn near you is solid - you walk with gravity, Space
     jumps ("Jump height" sets how high), Ctrl runs, you slide along walls, step up kerbs and fall off ledges. Space twice quickly flies (Space / Shift
     up / down); flying down onto the ground lands, Space twice in the air drops you. Water isn't solid (you walk on
-    the bottom); anything unticked in the list isn't solid either. With collisions off you fly through everything.
+    the bottom); anything unticked in the list isn't solid either. Under the list: walking or flying, collisions on / off and your height above the ground, and
+    three boxes x, y, z - where you are (y = the height of your feet). To warp: Esc (to free the mouse), click a box,
+    type the place (Tab moves to the next box) and press Enter. Nothing stops you warping into a hill: turn collisions
+    off and fly out. With collisions off you fly through everything,
+    also under the world (to see the islands drawn under their tunnel entrances) and out past the edge of its square.
     B tints the far-off, low-detail part of the world red (to see where full detail ends).
-    Save while walking makes a save point: where you are, which way you look, collisions / flying, the sliders and
-    every tick. Ticking Walk the world again starts there. Without a save point, walking starts with the Area group
+    Save while walking makes a save point: where you are, which way you look, collisions / flying, the sliders
+    (including Water ripple size and speed) and every tick. Ticking Walk the world again starts there. Without a save point, walking starts with the Area group
     off and only the P-switch, ? panel and special coin markers shown.
   "Export PNG" saves the 3D view exactly as shown, at the window's size (the name includes the ground layer).
     (Build .106 kept a "tex_cache" folder next to ns2dig.exe; it isn't used any more and can be deleted.)

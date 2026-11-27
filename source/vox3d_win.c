@@ -79,10 +79,10 @@ typedef void (APIENTRY *PFNDeleteBuffers)(GLsizei, const GLuint *);
 #define V3_TIMER_CSIZE 5
 #define V3_TIMER_WALK 6
 #define V3_TIMER_WATER 7          // moving water ripples: a redraw about 30 times a second while water is on screen
-enum { V3_PROPS = 1986, V3_LANDMARKS = 1987, V3_HELPER = 1988, V3_CLOTHSIM = 1989, V3_CLOTH = 1990, V3_LOD = 2001, V3_CUT, V3_RESET, V3_EXPORT, V3_LIST, V3_ALL, V3_NONE, V3_INFO, V3_HELP, V3_CUTLBL, V3_MATLBL, V3_ANIM, V3_PLAY, V3_FRAME, V3_ANIMFILE, V3_ATTACH, V3_SPEED, V3_KEEP, V3_SORT, V3_FIND, V3_COLOUR, V3_OVERLAY, V3_TOPVIEW, V3_PNG, V3_PROBES, V3_CTLBTN, V3_COORD, V3_SOUNDS, V3_SAVEVIEW, V3_CSIZE, V3_CSIZELBL, V3_WALK, V3_WDET, V3_WDETLBL, V3_WCOLL, V3_WHGT, V3_WHGTLBL, V3_WJMP, V3_WJMPLBL, V3_WSPD, V3_WSPDLBL, V3_WRIP, V3_WRIPLBL, V3_WRSP, V3_WRSPLBL };
+enum { V3_PROPS = 1986, V3_LANDMARKS = 1987, V3_HELPER = 1988, V3_CLOTHSIM = 1989, V3_CLOTH = 1990, V3_LOD = 2001, V3_CUT, V3_RESET, V3_EXPORT, V3_LIST, V3_ALL, V3_NONE, V3_INFO, V3_HELP, V3_CUTLBL, V3_MATLBL, V3_ANIM, V3_PLAY, V3_FRAME, V3_ANIMFILE, V3_ATTACH, V3_SPEED, V3_KEEP, V3_SORT, V3_FIND, V3_COLOUR, V3_OVERLAY, V3_TOPVIEW, V3_PNG, V3_PROBES, V3_CTLBTN, V3_COORD, V3_SOUNDS, V3_SAVEVIEW, V3_CSIZE, V3_CSIZELBL, V3_WALK, V3_WDET, V3_WDETLBL, V3_WCOLL, V3_WHGT, V3_WHGTLBL, V3_WJMP, V3_WJMPLBL, V3_WSPD, V3_WSPDLBL, V3_WRIP, V3_WRIPLBL, V3_WRSP, V3_WRSPLBL, V3_RES, V3_RESLBL, V3_WX, V3_WY, V3_WZ, V3_WXL, V3_WYL, V3_WZL };
 
 /* placed objects of the MKW world (Banc\World_Game03 + World_Game03-Free), read once per dump and kept: */
-typedef struct { char nm[96]; float T[3], R[3], S[3]; unsigned char gridify, resident, sphere, prefab; } V3Act;   // sphere: the PrimitiveType - 0 none / other (Cone, Camera...), 1 Sphere, 2 Cylinder(HighRes), 3 Cube; prefab: from a course placed whole (Rainbow Road)
+typedef struct { char nm[96]; float T[3], R[3], S[3]; unsigned char gridify, resident, sphere, prefab, isl; } V3Act;   // sphere: the PrimitiveType - 0 none / other (Cone, Camera...), 1 Sphere, 2 Cylinder(HighRes), 3 Cube; prefab: from a course placed whole (Rainbow Road)
 typedef struct { wchar_t path[2400], file[96]; float T[3], ry; } V3Pref;   // a course placed whole by a point: its placement file and where it's put
 // one record per object name: how many are placed in the whole world, its model's size, and what the last load did
 // with it (ent: the list entry it's drawn as; why: why it isn't) - the "objects near" list reports from this
@@ -156,12 +156,16 @@ typedef struct {
     // the full-detail tiles: a fixed grid of squares (size = the slider); the 2 x 2 nearest you are kept loaded, a spare
     // or so more are kept so going back doesn't load again. Loaded one at a time through the normal area pipeline.
     struct V3Tile { int tx, tz, stale; struct V3Snap s; float *h, ox, oz, st, cb[4]; int G;
-                    float *ct; int nct, cw, chh; int *cStart, *cIdx; float cx0, cz0, ccs; } wTile[6];   /* ct: its solid triangles (9 floats), in a grid of cells for collisions */ int wLoadTx, wLoadTz, wTileLoading, wLoadBuild, wLift, wGridN, wDbgBack;
+                    float *ct; int nct, cw, chh; int *cStart, *cIdx; float cx0, cz0, ccs; char (*en)[VOX_MATN]; uint64_t *ec; int nen; } wTile[6];   /* en / ec: its list entries and their counts (the walking list shows every kept tile's) */ uint64_t listCnt[VOX_MAXMAT];   /* ct: its solid triangles (9 floats), in a grid of cells for collisions */ int wLoadTx, wLoadTz, wTileLoading, wLoadBuild, wLift, wGridN, wDbgBack;
     char (*kgName)[VOX_MATN]; unsigned char *kgState; int nkg;   // list groups all ticked (1) / all unticked (2) before a reload
     float *wGrid; int wGridW; float wGox, wGoz, wGst, wWorldW[4], wRadius; int wDet, wAreaOn; HWND wDetLbl, wDetSl, wHgtLbl, wHgtSl, wJmpLbl, wJmpSl, wSpdLbl, wSpdSl; float wHeight, wJump, wBR[4], wBRg[4]; int wBROk, wBRgOk;
     // terrain water, for the water shader: wRip the ripple pattern's repeat, wRsp its speed (game units / a second) - both our
     // choices, not in the game's files; wDrew: water was drawn since the last redraw tick (moving ripples redraw only then)
     HWND wRipLbl, wRipSl, wRspLbl, wRspSl; float wRip, wRsp; int wDrew;
+    HWND resLbl, resSl; int resFull;
+    HWND wEd[3], wEdL[3];             // walking: x / y / z boxes under the walking line - type a place and press Enter to warp there
+    int loadUI;                      // a load running: the resolution box / slider and the cut hidden, the buttons greyed (V3LoadUI)   // terrain views: the resolution slider (low / high / full); resFull: full = every object on the whole map
+    HWND rowTip; int rowTipItem;     // the list's tooltip over the whole row (the built-in one only showed over the # column) and its row
     int dragging; POINT last;
     int cutPos;                      // 0..1000 (1000 = no cut)
     int fillingList;
@@ -169,7 +173,7 @@ typedef struct {
     // the list's groups (V3FillList): name, its entries (grpIds from grpStart, grpN of them), its row (-1 none);
     // per entry its group and row (-1: in a closed group / not listed); the groups left open (by name)
     char grpName[VOX_MAXMAT][VOX_MATN]; int grpStart[VOX_MAXMAT], grpN[VOX_MAXMAT], grpIds[VOX_MAXMAT], grpRow[VOX_MAXMAT], ngrp;
-    short grpOfMat[VOX_MAXMAT]; int matRow[VOX_MAXMAT]; char (*expName)[VOX_MATN]; int nexp, capexp; unsigned char grpSome[VOX_MAXMAT];   // grpSome: only some shown (drawn as a square in the box)
+    short grpOfMat[VOX_MAXMAT], grpParent[VOX_MAXMAT]; int ngrpTop; int matRow[VOX_MAXMAT]; char (*expName)[VOX_MATN]; int nexp, capexp; unsigned char grpSome[VOX_MAXMAT];   // grpSome: only some shown (drawn as a square in the box)
     int panelW96, col0W96, col2W96, splitDrag, colsSet;    // left panel and list column widths (at 96 dpi; saved with the view); dragging the divider
     PFNGenBuffers glGenBuffers_; PFNBindBuffer glBindBuffer_; PFNBufferData glBufferData_; PFNDeleteBuffers glDeleteBuffers_;
     wchar_t status[256];
@@ -183,10 +187,11 @@ typedef struct {
     // P-switch missions / stickers: placed objects that name a mission (V3GatherActors), the collectible lists' points
     // (all of them), the sticker names by id (murmur3 of the name) and the mission texts (Mals\USen\MsgMain.msarc)
     struct V3Wta { float T[3]; char ms[56]; } *wta; int nwta;
-    struct V3Isl { uint64_t hash; float T[3], LT[3]; int noPos; char nm[64], island[48], ms[56]; } *isl; int nisl;   // actors inside the islands (drawn at the entrance)
+    struct V3Isl { uint64_t hash; float T[3], LT[3]; int noPos; char nm[64], island[48], ms[56]; } *isl; int nisl;
+    char islName[33][48]; int nislName; float islPos[33][4];   // (+ the entrance x, y, z and the island's drawn origin height)   // the islands drawn under their entrances: "Island: <name>" (V3Act.isl = index + 1)   // actors inside the islands (drawn at the entrance)
     struct V3CPt { float T[3], R[3], S[3]; int list, placed, noPos; char stk[40]; char ms[56]; char island[48], inm[64], an[96]; } *cpt; int ncpt;
     char clist[8][40], clfile[8][120], clact[8][4][96]; int nclist, clnact[8], clall[8], cltot[8]; unsigned char *actColl;
-    struct V3CInst { size_t v0, v1; float A[3], h; int cpt; } *cinst; int ncinst, cHot, glowAll; HWND stkWnd; unsigned char *stkPx; int stkW, stkH; char stkName[48]; size_t cv0; float *corig, collScale;   // the collectibles drawn (V3AddCollectibles)
+    struct V3CInst { size_t v0, v1; float A[3], h; int cpt, mat; } *cinst; signed char matList[VOX_MAXMAT];   /* matList: the collectible list an entry is one of (-1 none) */ int ncinst, cHot, glowAll; HWND stkWnd; unsigned char *stkPx; int stkW, stkH; char stkName[48]; size_t cv0; float *corig, collScale;   // the collectibles drawn (V3AddCollectibles)
     struct V3Stk { uint32_t id; char nm[40]; } *stk; int nstk, stkTried; Msbt missMsg; int missMsgTried; char missMsgFrom[200];      // the game's collectible lists drawn this load (V3AddCollectibles)   // the game's actor settings / model info archives (V3ActorModelFile)
     char *pieceTxt[VOX_MAXMAT];                              // terrain: per entry, the ground-piece part names drawn as it (\n-separated)
     unsigned char fromPiece[VOX_MAXMAT];                     // terrain: entries with triangles from the merged ground pieces
@@ -1022,6 +1027,14 @@ static void V3SceneName(const wchar_t *dir, char *out, size_t n) {
     snprintf(out, n, "%ls", f); char *d = strrchr(out, '.'); if (d && !_stricmp(d, ".tscb")) *d = 0;
 }
 static int V3IsTerrainGrid(const V3 *v) { return !wcscmp(v->geom, L"terrainworld") || !wcsncmp(v->geom, L"terrainarea:", 12); }
+// terrain views' resolution: 0 low (lodSel 2, the default), 1 high (lodSel 1: the finer ground), 2 full (high + resFull: on the whole
+// map every object as well - the small ones, the markers, the fine ground pieces and the full models, as walking at 16000 loads)
+static int V3ResPos(const V3 *v) { return v->resFull ? 2 : v->lodSel == 1 ? 1 : 0; }
+static void V3ResLabel(V3 *v) {
+    int area = !wcsncmp(v->geom, L"terrainarea:", 12);
+    static const wchar_t *const t[3] = { L"Resolution: low (quick to open)", L"Resolution: high (finer ground)", L"Resolution: full (every object - slower to open)" };
+    SetWindowTextW(v->resLbl, area && V3ResPos(v) == 2 ? L"Resolution: full (in an area: the same as high)" : t[V3ResPos(v)]);
+}
 static void V3DrawArrows(V3 *v);
 static void V3SetInfo(V3 *v, const wchar_t *t);
 static float V3GridH(const VoxPart *p, float x, float z, int *in);
@@ -1068,6 +1081,33 @@ static void V3LayerJobFn(void *ctx, int i) {
 }
 static int V3IsWaterMat(const char *n);
 static int V3IsFallTex(V3 *v, int sl);
+static void V3LoadUI(V3 *v, int on);
+// islands drawn under their tunnel entrances (N.221): a move per island (game units: x, up, z) on top of "highest point 60 m
+// below the entrance" - set from the user's look at each one (the place is ours; the game never puts islands in the world)
+// a thing's rotation (X, then Y, then Z, as the view turns models: M = Rz Ry Rx) turned by t about the world's Y axis:
+// Ry(t) M back to X / Y / Z angles. (.247: adding t to the Y angle alone left ShyGuyBazaar_01's tunnel pipes sideways -
+// their rotations have X / Z parts too)
+static void V3TurnRotY(float R[3], float t) {
+    float cx = cosf(R[0]), sx = sinf(R[0]), cy = cosf(R[1]), sy = sinf(R[1]), cz = cosf(R[2]), sz = sinf(R[2]);
+    float M[3][3] = { { cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx },
+                      { sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx },
+                      { -sy,     cy * sx,                cy * cx } };
+    float c = cosf(t), s = sinf(t), N[3][3];
+    for (int j = 0; j < 3; j++) { N[0][j] = c * M[0][j] + s * M[2][j]; N[1][j] = M[1][j]; N[2][j] = -s * M[0][j] + c * M[2][j]; }
+    float ny = -N[2][0]; if (ny > 1) ny = 1; if (ny < -1) ny = -1;
+    R[1] = asinf(ny);
+    if (fabsf(ny) < 0.99999f) { R[0] = atan2f(N[2][1], N[2][2]); R[2] = atan2f(N[1][0], N[0][0]); }
+    else { R[2] = 0; R[0] = atan2f(-N[1][2], N[1][1]); }
+}
+// each island's move from "top 60 m under the entrance" (the user's checks, .246): x / y / z in metres, then a turn about
+// the island's own origin, seen from above (degrees, + clockwise - the view's Y rotation the other way round)
+static const struct { const char *island; float dx, dy, dz, turn; } kIslandMove[] = {
+    { "StormClouds_00",      0, -25,  0,   0 },
+    { "KoopaTroopaBeach_00", 0,   0,  0,   0 },
+    { "ShyGuyBazaar_00",   170, -13,  0,   0 },     // (towards x 0: its entrance is at x -6576; 70, +80, +10, +10; down 5 + 8 - .249)
+    { "ChocoMountain_00",    0, -96,  0,   0 },
+    { "ShyGuyBazaar_01",     0, -13, 170, 90 },     // (towards z 0: its entrance is at z -179; 77, +73, +10, +10; down 5 + 8 - .249; turned 90 clockwise)
+};
 static unsigned char *V3ReadTex(const wchar_t *modelPath, const char *name, int *w, int *h);
 // water, muddy water, ghost swamp: the game's water texture (CmnTex_Tera_Water_Emm, first layer) as a grey ripple pattern over
 // their colour, a little see-through (drawn last, blended). Lava keeps its plain colour.
@@ -1200,10 +1240,13 @@ static const char *V3SurfaceKind(const char *n) {
     return "Water";
 }
 /* ------------------------------------------------------------------ parallel loading helpers */
-typedef struct { volatile LONG next; int n; void (*fn)(void *, int); void *ctx; } V3Par;
+// the loading thread's cancel flag (set by V3Worker for its own thread): closing the view / loading again stops the
+// parallel jobs too - .239 crashed when a full-resolution load outlived the window (the close waited 15 s, then freed)
+static __thread volatile long *t_v3Cancel;
+typedef struct { volatile LONG next; int n; void (*fn)(void *, int); void *ctx; volatile long *cancel; } V3Par;
 static DWORD WINAPI V3ParWorker(LPVOID a) {
     V3Par *P = (V3Par *)a;
-    for (;;) { int i = (int)InterlockedIncrement(&P->next) - 1; if (i >= P->n) break; P->fn(P->ctx, i); }
+    for (;;) { int i = (int)InterlockedIncrement(&P->next) - 1; if (i >= P->n || (P->cancel && *P->cancel)) break; P->fn(P->ctx, i); }
     return 0;
 }
 // fn(ctx, i) for i = 0 .. n-1 on all the processor's cores
@@ -1211,7 +1254,7 @@ static void V3ParallelFor(int n, void (*fn)(void *, int), void *ctx) {
     if (n <= 0) return;
     SYSTEM_INFO si; GetSystemInfo(&si);
     int nt = (int)si.dwNumberOfProcessors; if (nt < 1) nt = 1; if (nt > 16) nt = 16; if (nt > n) nt = n;
-    V3Par P = { -0 + 0, n, fn, ctx }; P.next = 0;
+    V3Par P = { -0 + 0, n, fn, ctx, t_v3Cancel }; P.next = 0;
     HANDLE th[16]; int k = 0;
     for (int i = 1; i < nt; i++) { th[k] = CreateThread(NULL, 1 << 20, V3ParWorker, &P, 0, NULL); if (th[k]) k++; }
     V3ParWorker(&P);                                         // this thread works too
@@ -1296,6 +1339,10 @@ static const char *V3CliffKind(const char *n) {
     return "Cliff";                                               // (CmnObj_Cliff<area code>...: VL, DT, IC...)
 }
 // an object's name for the list: without "CmnObj_" / "Stage_" in front or "_00" at the end
+// the three collectible lists' names in the list (user .250): "Collectable: P-Switch / ? Panel / Peach medallion: ..."
+static const char *V3CollName(const char *list) {
+    return !strcmp(list, "PSwitch") ? "P-Switch" : !strcmp(list, "HatenaPanel") ? "? Panel" : !strcmp(list, "SpecialCoin") ? "Peach medallion" : NULL;
+}
 static void V3ObjShort(const char *nm, char *out, size_t n) {
     const char *s = !strncmp(nm, "CmnObj_", 7) ? nm + 7 : !strncmp(nm, "Stage_", 6) ? nm + 6 : nm;
     snprintf(out, n, "%s", s);
@@ -1356,7 +1403,7 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
     if (v->allAct && !_wcsicmp(v->allRoot, key)) return;
     free(v->allAct); v->allAct = NULL; v->nAllAct = 0; free(v->names); v->names = NULL; v->capNames = v->nNames = 0;
     free(v->wta); v->wta = NULL; v->nwta = 0; int capW = 0;
-    free(v->isl); v->isl = NULL; v->nisl = 0; int capI = 0;
+    free(v->isl); v->isl = NULL; v->nisl = 0; int capI = 0; v->nislName = 0;
     struct { float T[3]; char info[160]; } sens[32]; int nsens = 0;      // the island tunnels' sensors (WorldResident)
     struct { float T[3], ry; char path[160]; } pts[8]; int npts = 0;      // whole courses placed by a point (Rainbow Road)
     swprintf(v->allRoot, 1024, L"%ls", key);
@@ -1508,6 +1555,41 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
         size_t zn; unsigned char *z = VoxReadFile(path, &zn); if (!z) continue;
         size_t n; unsigned char *b = VoxUnzstd(z, zn, &n); free(z); if (!b) continue;
         Byml y; BymlNode r = BymlOpen(&y, b, n), acts = BymlGet(&y, r, "Actors");
+        /* drawn under its way in (user .241, option 2): the island's own objects, offset so the island's highest point sits
+           60 m below the tunnel sensor - the place is OURS (the game loads an island as a scene of its own, never in the
+           world). One entry per island, "Island: <name>", unticked at first. The _Fix file wins over the plain one. */
+        int fixToo = 0;
+        if (!wcsstr(ifd.cFileName, L"_Fix")) { wchar_t fx[2400]; swprintf(fx, 2400, L"%ls", path); wchar_t *d = wcsstr(fx, L".bcett"); if (d) { wmemmove(d + 4, d, wcslen(d) + 1); memcpy(d, L"_Fix", 4 * sizeof(wchar_t)); fixToo = GetFileAttributesW(fx) != INVALID_FILE_ATTRIBUTES; } }
+        if (ks >= 0 && !fixToo && v->nislName < 32) {
+            int ii = v->nislName++; snprintf(v->islName[ii], sizeof v->islName[ii], "%s", ib);
+            float top = -1e30f;
+            for (int i = 0; i < BymlCount(&y, acts); i++) { BymlNode tr = BymlGet(&y, BymlAt(&y, acts, i), "Translate"); if (tr.type) { float ty = BymlFloat(BymlAt(&y, tr, 1), 0); if (ty > top) top = ty; } }
+            if (top < -1e29f) top = 0;
+            float O[3] = { sens[ks].T[0], sens[ks].T[1] - 60 - top, sens[ks].T[2] }, turn = 0;
+            for (size_t q = 0; q < sizeof kIslandMove / sizeof kIslandMove[0]; q++)
+                if (!_stricmp(kIslandMove[q].island, ib)) { O[0] += kIslandMove[q].dx; O[1] += kIslandMove[q].dy; O[2] += kIslandMove[q].dz; turn = -kIslandMove[q].turn * 3.14159265f / 180; }
+            v->islPos[ii][0] = sens[ks].T[0]; v->islPos[ii][1] = sens[ks].T[1]; v->islPos[ii][2] = sens[ks].T[2]; v->islPos[ii][3] = O[1];
+            for (int i = 0; i < BymlCount(&y, acts); i++) {
+                BymlNode a = BymlAt(&y, acts, i);
+                const char *nm = BymlStr(&y, BymlGet(&y, a, "Name")); char gclean[96];
+                if (!nm) { const char *g = BymlStr(&y, BymlGet(&y, a, "Gyaml")); if (!g) continue; const char *sl = strrchr(g, '/');
+                           snprintf(gclean, sizeof gclean, "%s", sl ? sl + 1 : g); char *e = strstr(gclean, ".gear__"); if (e) *e = 0; nm = gclean; }
+                if (!nm[0]) continue;
+                V3Act A; memset(&A, 0, sizeof A); snprintf(A.nm, sizeof A.nm, "%s", nm); A.prefab = 2; A.isl = (unsigned char)(ii + 1);
+                BymlNode t = BymlGet(&y, a, "Translate"), ro = BymlGet(&y, a, "Rotate"), sc = BymlGet(&y, a, "Scale");
+                for (int q = 0; q < 3; q++) { A.T[q] = O[q] + BymlFloat(BymlAt(&y, t, q), 0); A.R[q] = BymlFloat(BymlAt(&y, ro, q), 0); A.S[q] = 1; }
+                if (turn != 0) {                    // turned about the island's origin (each thing's own rotation turned with it)
+                    float lx = A.T[0] - O[0], lz = A.T[2] - O[2], c = cosf(turn), sn = sinf(turn);
+                    A.T[0] = O[0] + lx * c + lz * sn; A.T[2] = O[2] - lx * sn + lz * c; V3TurnRotY(A.R, turn);
+                }
+                if (sc.type == 0xC0) for (int q = 0; q < 3; q++) A.S[q] = BymlFloat(BymlAt(&y, sc, q), 1);
+                else if (sc.type) A.S[0] = A.S[1] = A.S[2] = BymlFloat(sc, 1);
+                const char *prim = BymlStr(&y, BymlGet(&y, a, "PrimitiveType")); A.sphere = (unsigned char)(!prim ? 0 : !strcmp(prim, "Sphere") ? 1 : !strncmp(prim, "Cylinder", 8) ? 2 : !strcmp(prim, "Cube") ? 3 : 0);
+                if (v->nAllAct == cap) { V3Act *na = (V3Act *)realloc(act, (size_t)cap * 2 * sizeof(V3Act)); if (!na) break; act = na; cap *= 2; v->allAct = act; }
+                act[v->nAllAct++] = A;
+                V3NameGet(v, A.nm, 1);                          // (not counted: an island's things don't change the world's "how many placed")
+            }
+        }
         for (int i = 0; i < BymlCount(&y, acts); i++) {
             BymlNode a = BymlAt(&y, acts, i);
             uint64_t hh = BymlU64(&y, BymlGet(&y, a, "Hash"), 0); if (!hh) continue;
@@ -1526,6 +1608,7 @@ static void V3GatherActors(V3 *v, const wchar_t *root) {
         free(b);
     } while (FindNextFileW(ifh, &ifd));
     if (ifh != INVALID_HANDLE_VALUE) FindClose(ifh);
+    v->allAct = act;                                       // (the islands' things may have grown it)
 }
 // the invisible areas: list entry for an area object (NULL: not an area); *shown: ticked at first
 static int V3AreaKnown(const char *nm) {                 // the area kinds that come first (and get their own colours)
@@ -1676,6 +1759,7 @@ static void V3AddSurfaceObjects(V3 *v) {
     if (!V3SceneRoot(root)) return;                                                    // ...\romfs
     float ws = p->terrWorld[2], half = p->terrWorld[3] * ws / 2;               // world -> terrain part coordinates: + half
     int whole = !(p->terrArea[2] > 0);
+    int sparse = whole && !v->resFull;      // the whole map at low / high resolution: big and rare objects only (full: everything, as walking at 16000)
     float ax0 = -1e30f, az0 = -1e30f, ax1 = 1e30f, az1 = 1e30f;                 // an area view: only what's inside it
     if (!whole) { ax0 = (p->terrArea[0] - p->terrWorld[0]) * ws; az0 = (p->terrArea[1] - p->terrWorld[1]) * ws; ax1 = ax0 + p->terrArea[2] * ws; az1 = az0 + p->terrArea[2] * ws; }
     V3Stage(v, L"Reading the placed objects...", 150);
@@ -1719,14 +1803,15 @@ static void V3AddSurfaceObjects(V3 *v) {
             crad[c] = fmaxf(hi[0] - lo[0], fmaxf(hi[1] - lo[1], hi[2] - lo[2])) / 2;
         }
     }
-    for (int i = 0; i < nact; i++) {
+    for (int i = 0; i < nact && !v->cancel; i++) {
         if (phase == 1 && !(i & 255)) v->ldDone = i;
         const char *nm = act[i].nm;
         V3Name *e = V3NameGet(v, nm, 1); if (!e) continue;
         int shownA; char abuf[40];
         if (V3AreaLabel(nm, &shownA, abuf)) continue;                       // drawn by V3AddAreas
         if (v->actColl && v->actColl[i]) {                                  // a collectible: drawn by V3AddCollectibles
-            if (phase) { char ce[VOX_MATN]; snprintf(ce, sizeof ce, "Marker: %s", v->clist[v->actColl[i] - 1]); V3MarkDrawn(v, nm, ce); }
+            if (phase) { char ce[VOX_MATN]; const char *cn = V3CollName(v->clist[v->actColl[i] - 1]);   // (the name record: what it's drawn as)
+                         if (cn) snprintf(ce, sizeof ce, "Collectable: %s", cn); else snprintf(ce, sizeof ce, "Marker: %s", v->clist[v->actColl[i] - 1]); V3MarkDrawn(v, nm, ce); }
             continue;
         }
         const float *T = act[i].T, *Rr = act[i].R, *S = act[i].S;
@@ -1735,18 +1820,34 @@ static void V3AddSurfaceObjects(V3 *v) {
         const char *ck = NULL; char kind[VOX_MATN]; int generic = 0;
         if (special) ck = NULL;
         else if (act[i].resident && V3CliffKind(nm)) { V3ResidentEntry(nm, kind, sizeof kind); ck = kind; }
-        else if (!act[i].resident && !strncmp(nm, "CmnObj_", 7) && (!strncmp(nm + 7, "Cliff", 5) || !strncmp(nm + 7, "Iceberg", 7))) {
+        else if (!act[i].resident && !act[i].isl && !strncmp(nm, "CmnObj_", 7) && (!strncmp(nm + 7, "Cliff", 5) || !strncmp(nm + 7, "Iceberg", 7))) {   // (an island's own cliffs: kept - it has no ground pieces)
             if (phase) V3MarkWhy(v, nm, "cliff / iceberg outside WorldResident: skipped (cliffs come from WorldResident and the ground pieces)");
             continue;
         } else { generic = 1; V3GenericKind(nm, p->nmat >= budget, kind, sizeof kind); ck = kind; }
-        if (act[i].prefab) {                     // Rainbow Road's things: one group of their own, "Rainbow Road: <name>"
-            char sh[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh); snprintf(kind, sizeof kind, "Rainbow Road: %s", !strncmp(nm, "Stage_", 6) ? nm + 6 : sh);
+        if (act[i].prefab == 2 && act[i].isl) {   // an island's things: one entry per island, "Island: <name>" (drawn under its way in)
+            char sh[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh);
+            snprintf(kind, sizeof kind, "Island: %s: %s", v->islName[act[i].isl - 1], !strncmp(nm, "Stage_", 6) ? nm + 6 : sh);
+            for (int l = 0; l < v->nclist; l++) for (int a = 0; a < v->clnact[l]; a++)      // an island's own P-switch / medallion (its
+                if (!strcmp(nm, v->clact[l][a]) && V3CollName(v->clist[l])) {                // real model, MissionGate002_S / Coin001_A): under
+                    int nth = 0, cnt = 0;                                                    // Collectable, numbered as its list's entry (user .250:
+                    for (int c = 0; c < v->ncpt && !nth; c++) {                              // counted once, drawn only inside the island)
+                        if (v->cpt[c].list != l) continue; cnt++;
+                        const char *ci = v->cpt[c].island; if (!ci[0]) continue;
+                        const char *cb = !_strnicmp(ci, "Island_", 7) ? ci + 7 : ci; size_t L = strlen(v->islName[act[i].isl - 1]);
+                        if (!_strnicmp(cb, v->islName[act[i].isl - 1], L) && (!cb[L] || !_stricmp(cb + L, "_Fix"))) nth = cnt;
+                    }
+                    if (nth) snprintf(kind, sizeof kind, "Collectable: %s: %03d in %s", V3CollName(v->clist[l]), nth, v->islName[act[i].isl - 1]);
+                    else snprintf(kind, sizeof kind, "Collectable: %s: in %s", V3CollName(v->clist[l]), v->islName[act[i].isl - 1]);
+                }   // (two levels in the list: Island > the island > its things - user .244)
+            ck = kind; special = 0; generic = 0;
+        } else if (act[i].prefab) {              // Rainbow Road's things: one group of their own, "Rainbow Road: <name>"
+            char sh[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh); snprintf(kind, sizeof kind, "Stage: Rainbow Road: %s", !strncmp(nm, "Stage_", 6) ? nm + 6 : sh);   // (in the Stage group: user .244)
             { size_t L = strlen(kind); if (L > 3 && !strcmp(kind + L - 3, "_00")) kind[L - 3] = 0; }
             ck = kind; special = 0;
         }
         if (ck && strncmp(nm, "Stage_", 6) && act[i].gridify) {               // merged into the gridify pieces (loaded there)
             if (phase) {
-                if (whole) V3MarkWhy(v, nm, "merged into the ground pieces (Gridify): shown in full-detail areas");
+                if (sparse) V3MarkWhy(v, nm, "merged into the ground pieces (Gridify): shown in full-detail areas and at full resolution");
                 else { char t[VOX_MATN]; V3PieceEntry(nm, t, sizeof t); if (t[0]) V3MarkDrawn(v, nm, t); }
             }
             continue;
@@ -1755,14 +1856,14 @@ static void V3AddSurfaceObjects(V3 *v) {
         if (T[0] + half < ax0 - mg || T[0] + half > ax1 + mg || T[2] + half < az0 - mg || T[2] + half > az1 + mg) continue;
         float gm = 300 + (e->rad > 0 ? e->rad * ms : 0);                 // (big objects reach in from further off)
         if (generic && !whole && (T[0] + half < ax0 - gm || T[0] + half > ax1 + gm || T[2] + half < az0 - gm || T[2] + half > az1 + gm)) continue;
-        if (generic && whole && e->count > 30 && e->rad >= 0 && e->rad * ms < 25) {
-            if (phase) { char t[72]; snprintf(t, sizeof t, "%d placed, small: shown in full-detail areas", e->count); V3MarkWhy(v, nm, t); }
+        if (generic && sparse && e->count > 30 && e->rad >= 0 && e->rad * ms < 25) {
+            if (phase) { char t[96]; snprintf(t, sizeof t, "%d placed, small: shown in full-detail areas and at full resolution", e->count); V3MarkWhy(v, nm, t); }
             continue;
         }
         // the model (found once per name this load)
         if (e->ci == -1) {
             wchar_t mp[2300];
-            if (!V3ModelPath(v, root, nm, whole && ck != NULL, mp, 2300)) e->ci = -2;
+            if (!V3ModelPath(v, root, nm, sparse && ck != NULL, mp, 2300)) e->ci = -2;
             else {
                 int c = 0; while (c < ncache && wcscmp(cache[c].path, mp)) c++;
                 if (c == ncache) { if (ncache >= 4096) { e->ci = -3; } else { cache[ncache].path = _wcsdup(mp); cache[ncache].part = NULL; ncache++; } }
@@ -1771,9 +1872,10 @@ static void V3AddSurfaceObjects(V3 *v) {
         }
         if (phase == 0) continue;
         if (e->ci == -2) {                                          // no model: a marker (full-detail areas)
-            if (whole) { V3MarkWhy(v, nm, "no model file: a marker in full-detail areas"); continue; }
+            if (sparse) { V3MarkWhy(v, nm, "no model file: a marker in full-detail areas and at full resolution"); continue; }
             char ent[VOX_MATN], sh[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh);
-            if (act[i].prefab) snprintf(ent, sizeof ent, "Rainbow Road: marker %s", sh);   // (unticked at first, like Marker)
+            if (act[i].prefab == 2 && act[i].isl) snprintf(ent, sizeof ent, "Island: %s: %s", v->islName[act[i].isl - 1], sh);   // (an island's markers: under its island, each kind its own entry)
+            else if (act[i].prefab) snprintf(ent, sizeof ent, "Stage: Rainbow Road: marker %s", sh);   // (unticked at first, like Marker)
             else if (strstr(nm, "SpecialSurface") || !strncmp(nm, "CmnObj_SFC", 10))     // surfaces without a model: with the other surfaces
                 snprintf(ent, sizeof ent, "Surface: %s (no model)", !strncmp(sh, "SpecialSurface", 14) ? sh + 14 : sh);
             else snprintf(ent, sizeof ent, "Marker: %s", sh);
@@ -1785,8 +1887,8 @@ static void V3AddSurfaceObjects(V3 *v) {
         VoxPart *m = cache[e->ci].part;
         if (!m) { V3MarkWhy(v, nm, "model can't be read"); continue; }
         if (e->rad < 0) e->rad = crad[e->ci];
-        if (generic && whole && e->count > 30 && e->rad * ms < 25) {
-            char t[72]; snprintf(t, sizeof t, "%d placed, small: shown in full-detail areas", e->count); V3MarkWhy(v, nm, t); continue;
+        if (generic && sparse && e->count > 30 && e->rad * ms < 25) {
+            char t[96]; snprintf(t, sizeof t, "%d placed, small: shown in full-detail areas and at full resolution", e->count); V3MarkWhy(v, nm, t); continue;
         }
         char base[200]; snprintf(base, sizeof base, "%s", nm);       // (special surfaces: their kind comes from the base name)
         { size_t L = strlen(base); if (L > 5 && !strcmp(base + L - 3, "_00")) base[L -= 3] = 0; char *us = strrchr(base, '_'); if (us) *us = 0; }
@@ -2186,7 +2288,7 @@ static void V3CollTexts(V3 *v) {
         if (V3CollS(v) != 1) { size_t L = strlen(v->coll[k].txt); snprintf(v->coll[k].txt + L, sizeof v->coll[k].txt - L, "\nshown %g x their size", V3CollS(v)); } }
 }
 static void V3AddCollectibles(V3 *v) {
-    VoxPart *p = &v->part; v->ncoll = 0; v->ncinst = 0; free(v->cinst); v->cinst = NULL; free(v->corig); v->corig = NULL;
+    VoxPart *p = &v->part; v->ncoll = 0; v->ncinst = 0; memset(v->matList, -1, sizeof v->matList); free(v->cinst); v->cinst = NULL; free(v->corig); v->corig = NULL;
     if (!(p->terrWorld[2] > 0) || p->gridW < 2 || !v->ncpt) return;
     wchar_t root[2100]; swprintf(root, 2100, L"%ls", v->dir);
     if (!V3SceneRoot(root)) return;
@@ -2198,14 +2300,22 @@ static void V3AddCollectibles(V3 *v) {
     v->cinst = (struct V3CInst *)calloc((size_t)v->ncpt, sizeof *v->cinst);
     if (!v->cinst) return;
     v->cv0 = p->ntv; v->glowAll = 1;                                // (their glow textures added: the "not yet done" look)
-    int here[8] = { 0 }, mat[8]; for (int l = 0; l < 8; l++) mat[l] = -1;
+    int here[8] = { 0 }, mat[8], num[8] = { 0 }; for (int l = 0; l < 8; l++) mat[l] = -1;
     for (int c = 0; c < v->ncpt; c++) {
         const struct V3CPt *cp = &v->cpt[c];
+        int nth = ++num[cp->list < 8 ? cp->list : 7];                  // (its number in its list, whether drawn here or not)
+        if (cp->island[0] && V3CollName(v->clist[cp->list])) continue;   // inside an island: drawn there, as the island's own model (user .250)
         // not drawn: an island with no known way in, or a point with no placed object that looks like an island's own
         // coordinates (near 0, 0, 0). Others with no placed object found (the medallions) are drawn at the list's position.
         if (cp->noPos || (!cp->placed && !cp->island[0] && fabsf(cp->T[0]) < 300 && fabsf(cp->T[2]) < 300 && fabsf(cp->T[1]) < 50)) continue;
         if (cp->T[0] + half < ax0 || cp->T[0] + half > ax1 || cp->T[2] + half < az0 || cp->T[2] + half > az1) continue;
-        char ent[VOX_MATN]; snprintf(ent, sizeof ent, "Marker: %s", v->clist[cp->list]);
+        char ent[VOX_MATN]; const char *lab = V3CollName(v->clist[cp->list]);
+        if (!lab) snprintf(ent, sizeof ent, "Marker: %s", v->clist[cp->list]);
+        else if (cp->island[0]) {                                   // each one its own entry (user .250): "Collectable: P-Switch: 012 at -2294, 3317"
+            const char *ib = !_strnicmp(cp->island, "Island_", 7) ? cp->island + 7 : cp->island; char isn[40]; snprintf(isn, sizeof isn, "%s", ib);
+            size_t L = strlen(isn); if (L > 4 && !_stricmp(isn + L - 4, "_Fix")) isn[L - 4] = 0;
+            snprintf(ent, sizeof ent, "Collectable: %s: %03d at %s tunnel", lab, nth, isn);
+        } else snprintf(ent, sizeof ent, "Collectable: %s: %03d at %.0f, %.0f", lab, nth, cp->T[0], cp->T[2]);
         int k = 0; while (k < nmc && strcmp(mc[k].an, cp->an)) k++;
         if (k == nmc && nmc < 16) {
             snprintf(mc[k].an, sizeof mc[k].an, "%s", cp->an); mc[k].m = NULL; mc[k].lowY = 0; nmc++;
@@ -2217,10 +2327,10 @@ static void V3AddCollectibles(V3 *v) {
             }
         }
         VoxPart *m = k < nmc ? mc[k].m : NULL;
-        struct V3CInst *in = &v->cinst[v->ncinst]; in->cpt = c; in->v0 = p->ntv;
+        struct V3CInst *in = &v->cinst[v->ncinst]; in->cpt = c; in->v0 = p->ntv; in->mat = -1;
         if (!m) {                                                   // no model: a small diamond
             int mi = V3AddMarkerSz(v, p, cp->T, half, ent, 1.5f, 0); if (mi < 0) continue;
-            mat[cp->list] = mi;
+            mat[cp->list] = mi; in->mat = mi; v->matList[mi] = (signed char)cp->list;
         } else {
             const float *T = cp->T, *Rr = cp->R, *S = cp->S;
             float cx = cosf(Rr[0]), sx = sinf(Rr[0]), cy = cosf(Rr[1]), sy = sinf(Rr[1]), cz = cosf(Rr[2]), sz = sinf(Rr[2]);
@@ -2242,7 +2352,7 @@ static void V3AddCollectibles(V3 *v) {
                 p->tmat[nt0 + added] = (uint16_t)mi; p->matCount[mi]++; added++;
             }
             p->ntv = nv0 + m->ntv; p->nti = nt0 + added; p->solid = p->nti;
-            mat[cp->list] = mi;
+            mat[cp->list] = mi; in->mat = mi; v->matList[mi] = (signed char)cp->list;
         }
         in->v1 = p->ntv;
         float lo = 1e30f, hi = -1e30f; for (size_t q = in->v0; q < in->v1; q++) { float yv = p->tv[q * 3 + 1]; if (yv < lo) lo = yv; if (yv > hi) hi = yv; }
@@ -2314,6 +2424,7 @@ static void V3AddGridifyPieces(V3 *v) {
     VoxPart *p = &v->part;
     if (!(p->terrWorld[2] > 0) || p->gridW < 2) return;
     int whole = p->terrArea[2] <= 0;
+    int coarse = whole && !v->resFull;     // the whole map at low / high: the coarse pieces (2 x 2 a square); full resolution: the fine ones (4 x 4)
     wchar_t root[2100]; swprintf(root, 2100, L"%ls", v->dir);
     if (!V3SceneRoot(root)) return;
     float ws = p->terrWorld[2], half = p->terrWorld[3] * ws / 2;
@@ -2321,13 +2432,13 @@ static void V3AddGridifyPieces(V3 *v) {
     if (!whole) { ax0 = (p->terrArea[0] - p->terrWorld[0]) * ws; az0 = (p->terrArea[1] - p->terrWorld[1]) * ws; ax1 = ax0 + p->terrArea[2] * ws; az1 = az0 + p->terrArea[2] * ws; }
     int cx0 = 0, cx1 = 15, cz0 = 0, cz1 = 15;
     if (!whole) { cx0 = (int)floorf((ax0 - half) / 1000 + 8); cx1 = (int)floorf((ax1 - half) / 1000 + 8); cz0 = (int)floorf((az0 - half) / 1000 + 8); cz1 = (int)floorf((az1 - half) / 1000 + 8); }
-    float cell = whole ? 500.0f : 250.0f;                                  // fine pieces (4 x 4) in areas, coarse (2 x 2) on the whole map
+    float cell = coarse ? 500.0f : 250.0f;                                 // fine pieces (4 x 4) in areas and at full resolution, coarse (2 x 2) on the whole map
     // every piece file of the squares in view, with where its cell's centre is
     typedef struct { wchar_t *path; float offx, offz; } V3Piece;
     V3Piece *list = NULL; int nlist = 0, caplist = 0;
     for (int cz = cz0; cz <= cz1; cz++) for (int cx = cx0; cx <= cx1; cx++) {
         if (cx < 0 || cz < 0 || cx > 15 || cz > 15) continue;
-        wchar_t pat[2300]; swprintf(pat, 2300, whole ? L"%ls\\Model\\Piece_Gridify_Game03_X%02d_Z%02d.Piece_Gridify_Game03_X%02d_Z%02d_*.bfres.zs"
+        wchar_t pat[2300]; swprintf(pat, 2300, coarse ? L"%ls\\Model\\Piece_Gridify_Game03_X%02d_Z%02d.Piece_Gridify_Game03_X%02d_Z%02d_*.bfres.zs"
                                                     : L"%ls\\Model\\Piece_Gridify_Game03_X%02d_Z%02d.Gridify_Game03_X%02d_Z%02d_*.bfres.zs", root, cx, cz, cx, cz);
         WIN32_FIND_DATAW fd; HANDLE fh = FindFirstFileW(pat, &fd);
         if (fh == INVALID_HANDLE_VALUE) continue;
@@ -2346,7 +2457,7 @@ static void V3AddGridifyPieces(V3 *v) {
     }
     // load them on all cores, a batch at a time (each loaded piece is held until it's merged), then merge in order
     V3StageCount(v, L"Loading the ground pieces (cliffs, rocks...)", 650, 150, nlist);
-    for (int b0 = 0; b0 < nlist; b0 += 48) {
+    for (int b0 = 0; b0 < nlist && !v->cancel; b0 += 48) {
         int bn = nlist - b0 < 48 ? nlist - b0 : 48;
         V3LoadJob jobs[48]; memset(jobs, 0, sizeof jobs);
         for (int j = 0; j < bn; j++) { jobs[j].path = list[b0 + j].path; jobs[j].done = &v->ldDone; }
@@ -2904,6 +3015,7 @@ static void V3AddAreas(V3 *v) {
     for (int i = 0; i < v->nAllAct; i++) {
         if (!(i & 255)) v->ldDone = pass * v->nAllAct + i;
         const V3Act *A = &v->allAct[i];
+        if (A->isl) continue;                             // (an island's own areas: not among the world's)
         int shown = 0; char abuf[40]; const char *label = V3AreaLabel(A->nm, &shown, abuf);
         if (!label || V3AreaKnown(A->nm) == pass) continue;
         if (pass && p->nmat >= VOX_MAXMAT - 6) label = "Area: other";
@@ -2923,10 +3035,14 @@ static int V3LoadTerrainGrid(V3 *v) {
         v->capV = v->part.ntv; v->capT = v->part.nti;          // (the ground's arrays are exactly that big)
         memset(v->fromPiece, 0, sizeof v->fromPiece);
         for (int k = 0; k < VOX_MAXMAT; k++) { free(v->pieceTxt[k]); v->pieceTxt[k] = NULL; }
-        v->nmtex = 0; V3AddSurfaceObjects(v); V3AddGridifyPieces(v);
-        V3AddAreas(v); V3AddCollectibles(v);
+        // (v->cancel: the view is closing / loading again - stop between the steps; the steps stop inside too)
+        v->nmtex = 0; if (!v->cancel) V3AddSurfaceObjects(v); if (!v->cancel) V3AddGridifyPieces(v);
+        if (!v->cancel) V3AddAreas(v); if (!v->cancel) V3AddCollectibles(v);
+        if (v->cancel) return ok;
         V3Stage(v, L"Loading the ground textures...", 810); V3LoadTerrainTextures(v);
+        if (v->cancel) return ok;
         V3LoadModelTextures(v);
+        if (v->cancel) return ok;
         if (!v->walk) {                                   // (walking: not needed, and slow)
             V3Stage(v, L"Loading the light probes...", 930); V3LoadProbes(v);
             V3Stage(v, L"Loading the sound probes...", 960); V3LoadSounds(v);
@@ -2934,7 +3050,7 @@ static int V3LoadTerrainGrid(V3 *v) {
         V3Stage(v, L"Finishing...", 990);
         for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++)                     // see-through, drawn last: areas, markers / shapes
             if (!strncmp(v->part.matName[k], "Area:", 5) || !strncmp(v->part.matName[k], "Marker:", 7) || strstr(v->part.matName[k], "(no model)")) {
-                int solid = 0; for (int c = 0; c < v->ncoll; c++) if (v->coll[c].mat == k) solid = 1;   // (collectibles: solid)
+                int solid = k < VOX_MAXMAT && v->matList[k] >= 0;   // (collectibles: solid)
                 if (!solid) v->waterBlend[k] = 2;
             }
         VoxPart *p = &v->part;
@@ -2949,6 +3065,7 @@ static int V3LoadTerrainGrid(V3 *v) {
 static DWORD WINAPI V3Worker(LPVOID p) {
     V3Job *j = (V3Job *)p;
     V3 *v = j->v;
+    t_v3Cancel = &v->cancel;                              // (this thread's parallel jobs stop when the view closes / loads again)
     if (j->doLoad) {
         int ok = !wcscmp(v->geom, L"phive") ? VoxLoadPhive(&v->part, v->dir) : !wcscmp(v->geom, L"terrain") ? VoxLoadTerrain(&v->part, v->dir) : V3IsTerrainGrid(v) ? V3LoadTerrainGrid(v) : !wcscmp(v->geom, L"bfres") ? VoxLoadBfres(&v->part, v->dir)
                : !wcscmp(v->geom, L"cloth") ? V3LoadClothView(v)
@@ -3012,7 +3129,7 @@ static void V3StartJob(V3 *v, int doLoad) {
     memcpy(j->hidden, v->hidden, sizeof j->hidden);
     for (int m = 0; m < VOX_MAXMAT; m++) if (v->visCtl[m]) j->hidden[m] = 0;      // shown / hidden while drawing instead
     v->cancel = 0; v->progress = 0;
-    if (doLoad) V3Stage(v, L"Loading...", -1);
+    if (doLoad) { V3Stage(v, L"Loading...", -1); V3LoadUI(v, 1); }
     if (!v->busyOn) v->busyT0 = GetTickCount();
     v->thread = CreateThread(NULL, 0, V3Worker, j, 0, NULL);
     if (!v->thread) { free(j); return; }
@@ -3039,7 +3156,7 @@ static void V3ReloadWorld(V3 *v) {
     v->partOk = 0; v->rebuildPending = 0;
     VoxFreePart(&v->part);
     memset(v->hidden, 0, sizeof v->hidden);
-    swprintf(v->status, 256, v->lodSel == 1 ? L"Loading the terrain in full detail..." : L"Loading the terrain at low resolution...");
+    swprintf(v->status, 256, v->resFull ? L"Loading the terrain at full resolution (every object - this takes a while)..." : v->lodSel == 1 ? L"Loading the terrain at high resolution..." : L"Loading the terrain at low resolution...");
     V3SetInfo(v, v->status);
     v->loading = 1;
     V3StartJob(v, 1);
@@ -4092,6 +4209,13 @@ static void V3WalkTileArrived(V3 *v) {
     }
     V3SnapTake(v, &v->wTile[t].s);
     struct V3Tile *T = &v->wTile[t];
+    {   // its list entries, by name (.245: the walking list showed only the last tile loaded - an island whose things were in
+        // another tile showed just the markers that reached into this one)
+        free(T->en); free(T->ec); T->en = NULL; T->ec = NULL; T->nen = 0;
+        int ne = 0; for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++) if (v->part.matCount[k]) ne++;
+        if (ne && (T->en = (char (*)[VOX_MATN])malloc((size_t)ne * VOX_MATN)) && (T->ec = (uint64_t *)malloc((size_t)ne * sizeof(uint64_t))))
+            for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++) if (v->part.matCount[k]) { memcpy(T->en[T->nen], v->part.matName[k], VOX_MATN); T->ec[T->nen++] = v->part.matCount[k]; }
+    }
     T->tx = v->wLoadTx; T->tz = v->wLoadTz; T->stale = 0;
     {   float A = kWalkDet[v->wDet], W2 = v->wWorldW[2], W3 = v->wWorldW[3];
         T->cb[0] = T->tx * A * W2; T->cb[1] = T->tz * A * W2;
@@ -4109,7 +4233,7 @@ static void V3WalkTileArrived(V3 *v) {
     }
 }
 static void V3ColFree(struct V3Tile *T) { free(T->ct); free(T->cStart); free(T->cIdx); T->ct = NULL; T->cStart = T->cIdx = NULL; T->nct = T->cw = T->chh = 0; }
-static void V3WalkTilesFree(V3 *v) { for (int t = 0; t < 6; t++) { V3SnapFree(v, &v->wTile[t].s); free(v->wTile[t].h); v->wTile[t].h = NULL; v->wTile[t].G = 0; V3ColFree(&v->wTile[t]); } v->wTileLoading = 0; }
+static void V3WalkTilesFree(V3 *v) { for (int t = 0; t < 6; t++) { free(v->wTile[t].en); free(v->wTile[t].ec); v->wTile[t].en = NULL; v->wTile[t].ec = NULL; v->wTile[t].nen = 0; V3SnapFree(v, &v->wTile[t].s); free(v->wTile[t].h); v->wTile[t].h = NULL; v->wTile[t].G = 0; V3ColFree(&v->wTile[t]); } v->wTileLoading = 0; }
 static void V3KeepSet(V3 *v, const char *name, unsigned char hid);
 static void V3KgSet(V3 *v, const char *g, unsigned char st);
 static void V3FillList(V3 *v);
@@ -4128,6 +4252,7 @@ static int V3WalkSave(V3 *v) {
     size_t cap = 8192 + (size_t)(v->nkeep + v->nkg + VOX_MAXMAT) * (VOX_MATN + 12), o = 0; char *t = (char *)malloc(cap); if (!t) return 0;
     o += snprintf(t + o, cap - o, "ns2dig walk 1\npos %.4f %.4f %.4f\nlook %.4f %.4f\ncoll %d\nfly %d\nspeed %g\nheight %g\njump %g\ndetu %g\n",
                   v->wpos[0], v->wpos[1] - v->wEye, v->wpos[2], v->wyaw, v->wpitch, v->wColl, v->wFly, v->wSpeedMul, v->wHeight, v->wJump, kWalkDet[v->wDet]);
+    o += snprintf(t + o, cap - o, "wrip %g\nwrsp %g\n", v->wRip, v->wRsp);      // the water sliders: ripple size and speed
     for (int q = 0; q < v->nkg && o + VOX_MATN + 12 < cap; q++) if (v->kgState[q] == 1 || v->kgState[q] == 2) o += snprintf(t + o, cap - o, "grp %d %s\n", v->kgState[q], v->kgName[q]);
     for (int q = 0; q < v->nkeep && o + VOX_MATN + 12 < cap; q++) o += snprintf(t + o, cap - o, "hide %d %s\n", v->keepHidden[q] ? 1 : 0, v->keepName[q]);
     if (v->partOk) for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT && o + VOX_MATN + 12 < cap; k++) o += snprintf(t + o, cap - o, "hide %d %s\n", v->hidden[k] ? 1 : 0, v->part.matName[k]);
@@ -4170,6 +4295,7 @@ static int V3WalkApplyTicks(V3 *v, const char *sv) {
             const char *n = v->keepName[q];
             if (!strncmp(n, "Area: ", 6)) v->keepHidden[q] = 1;
             else if (!strncmp(n, "Marker: ", 8)) v->keepHidden[q] = strcmp(n + 8, "PSwitch") && strcmp(n + 8, "HatenaPanel") && strcmp(n + 8, "SpecialCoin");
+            else if (!strncmp(n, "Island: ", 8) || !strncmp(n, "Stage: Rainbow Road: marker ", 28)) v->keepHidden[q] = 1;   // (unticked at first, as in the world view - .244: StormClouds_00's 3 model-less objects shown as blue diamonds in the sky)
             else v->keepHidden[q] = 0;
         }
     }
@@ -4236,6 +4362,12 @@ static void V3WalkStart(V3 *v) {
         float du;
         if ((q = strstr(sv, "\ndetu ")) && sscanf(q + 6, "%f", &du) == 1 && du > 0) { v->wDet = V3WalkDetNearest(du); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, v->wDet); }
         else if ((q = strstr(sv, "\ndet ")) && sscanf(q + 5, "%d", &dt) == 1 && dt >= 0 && dt <= 10) { v->wDet = V3WalkDetNearest(kWalkDetOld[dt]); SendMessageW(v->wDetSl, TBM_SETPOS, TRUE, v->wDet); }
+        {   float wr, ws;                                   // the water sliders (save points from .237 on; older ones keep the current values)
+            if ((q = strstr(sv, "\nwrip ")) && sscanf(q + 6, "%f", &wr) == 1 && wr >= 20 && wr <= 400) {
+                v->wRip = roundf(wr / 10) * 10; SendMessageW(v->wRipSl, TBM_SETPOS, TRUE, (LPARAM)(v->wRip / 10)); V3WaterRipLabel(v); }
+            if ((q = strstr(sv, "\nwrsp ")) && sscanf(q + 6, "%f", &ws) == 1 && ws >= 0 && ws <= 20) {
+                v->wRsp = roundf(ws); SendMessageW(v->wRspSl, TBM_SETPOS, TRUE, (LPARAM)v->wRsp); V3WaterSpdLabel(v); }
+        }
         if ((q = strstr(sv, "\ncoll ")) && sscanf(q + 6, "%d", &c) == 1) v->wColl = c ? 1 : 0;
         if ((q = strstr(sv, "\nfly ")) && sscanf(q + 5, "%d", &fl) == 1) v->wFly = fl ? 1 : 0;
         if ((q = strstr(sv, "\nlook ")) && sscanf(q + 6, "%f %f", &yw, &pt) == 2 && isfinite(yw) && isfinite(pt)) { v->wyaw = yw; v->wpitch = pt; }
@@ -4246,7 +4378,7 @@ static void V3WalkStart(V3 *v) {
     free(sv);
     SendMessageW(v->collCb, BM_SETCHECK, v->wColl ? BST_CHECKED : BST_UNCHECKED, 0); ShowWindow(v->collCb, SW_SHOW);
     v->wRadius = v->radius; V3SnapTake(v, &v->wBack);
-    EnableWindow(v->lod, FALSE);                          // (the resolution: the squares are full detail, the backdrop as loaded)
+    ShowWindow(v->lod, SW_HIDE); ShowWindow(v->resLbl, SW_HIDE); ShowWindow(v->resSl, SW_HIDE);   // (the resolution: the squares are full detail, the backdrop as loaded - none while walking)
     ShowWindow(v->wDetLbl, SW_SHOW); ShowWindow(v->wDetSl, SW_SHOW); V3WalkDetLabel(v);
     SendMessageW(v->wHgtSl, TBM_SETPOS, TRUE, (LPARAM)(int)((v->wHeight - 1) * 2 + 0.5f)); V3WalkHgtLabel(v);
     ShowWindow(v->wHgtLbl, SW_SHOW); ShowWindow(v->wHgtSl, SW_SHOW);
@@ -4262,7 +4394,7 @@ static void V3WalkStart(V3 *v) {
 static void V3WalkStop(V3 *v) {
     V3WalkRelease(v); v->walk = 0; v->wStartPending = 0; KillTimer(v->wnd, V3_TIMER_WALK);
     if (v->walkCb) SendMessageW(v->walkCb, BM_SETCHECK, BST_UNCHECKED, 0);
-    ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE); ShowWindow(v->wHgtLbl, SW_HIDE); ShowWindow(v->wHgtSl, SW_HIDE); ShowWindow(v->wJmpLbl, SW_HIDE); ShowWindow(v->wJmpSl, SW_HIDE); ShowWindow(v->wSpdLbl, SW_HIDE); ShowWindow(v->wSpdSl, SW_HIDE); ShowWindow(v->collCb, SW_HIDE); EnableWindow(v->lod, TRUE);
+    ShowWindow(v->wDetLbl, SW_HIDE); ShowWindow(v->wDetSl, SW_HIDE); ShowWindow(v->wHgtLbl, SW_HIDE); ShowWindow(v->wHgtSl, SW_HIDE); ShowWindow(v->wJmpLbl, SW_HIDE); ShowWindow(v->wJmpSl, SW_HIDE); ShowWindow(v->wSpdLbl, SW_HIDE); ShowWindow(v->wSpdSl, SW_HIDE); ShowWindow(v->collCb, SW_HIDE); ShowWindow(v->resLbl, SW_SHOW); ShowWindow(v->resSl, SW_SHOW); EnableWindow(v->lod, TRUE);
     V3WalkTilesFree(v); V3SnapFree(v, &v->wBack); free(v->wGrid); v->wGrid = NULL; v->wGridW = 0;
     if (v->wAreaOn) {                                        // back to the whole world
         v->wAreaOn = 0; swprintf(v->geom, 2048, L"terrainworld");
@@ -4282,15 +4414,47 @@ static void V3WalkInfo(V3 *v) {
     float half = v->wWorldW[3] * v->wWorldW[2] / 2; int in = 0;
     float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
     // where you are: under Show all / Hide all (like the place under the cursor in the normal view); the keys: the Controls window
+    // line 1: walking / flying, collisions, the height above the ground; line 2: x / y (the feet's height) / z boxes - type
+    // a place and press Enter to warp there (user .243: walking between the islands took too long)
     wchar_t c[200];
-    swprintf(c, 200, L"%ls: x %.0f, z %.0f, height %.0f (%.0f above the ground)",
-             !v->wColl ? L"Flying (collisions off)" : v->wFly ? L"Flying" : L"Walking",
-             v->wpos[0] - half, v->wpos[2] - half, v->wpos[1], in ? v->wpos[1] - v->wEye - g : 0.f);
+    const wchar_t *mode = !v->wColl ? L"Flying, collisions off" : v->wFly ? L"Flying, collisions on" : L"Walking, collisions on";
+    if (in) swprintf(c, 200, L"%ls - %.0f above the ground", mode, v->wpos[1] - v->wEye - g);
+    else swprintf(c, 200, L"%ls - no ground here", mode);
     wchar_t old[200]; GetWindowTextW(v->coord, old, 200); if (wcscmp(old, c)) SetWindowTextW(v->coord, c);
+    float val[3] = { v->wpos[0] - half, v->wpos[1] - v->wEye, v->wpos[2] - half };
+    HWND foc = GetFocus();
+    for (int k = 0; k < 3; k++) if (v->wEd[k] && foc != v->wEd[k]) {      // (not while you're typing in it)
+        wchar_t t[40], o2[40]; swprintf(t, 40, L"%.0f", val[k]); GetWindowTextW(v->wEd[k], o2, 40); if (wcscmp(o2, t)) SetWindowTextW(v->wEd[k], t);
+    }
     const wchar_t *st = v->loading ? L"Loading the full detail around you..." : L"";
     if (wcscmp(v->status, st)) { swprintf(v->status, 256, L"%ls", st); V3UpdateInfo(v); }
 }
 static void V3WalkCheckArea(V3 *v) { V3WalkPump(v); }
+// the warp: x / y / z from the three boxes (y = the feet's height, as shown); no safeguards (inside a hill: collisions off
+// and walk out). Collisions on: wait in the air until the ground there has loaded, as when walking starts.
+static void V3WalkWarp(V3 *v) {
+    if (!v->walk) return;
+    float half = v->wWorldW[3] * v->wWorldW[2] / 2, val[3];
+    for (int k = 0; k < 3; k++) {
+        wchar_t t[64]; GetWindowTextW(v->wEd[k], t, 64); wchar_t *e = NULL; double d = wcstod(t, &e);
+        if (e == t) { MessageBeep(MB_ICONWARNING); SetFocus(v->wEd[k]); return; }     // (not a number)
+        val[k] = (float)d;
+    }
+    v->wpos[0] = val[0] + half; v->wpos[1] = val[1] + v->wEye; v->wpos[2] = val[2] + half;
+    v->wVy = 0; if (v->wColl) { v->wLift = 1; v->wLiftKeep = 0; }
+    V3WalkCheckArea(v); V3WalkInfo(v); InvalidateRect(v->gl, NULL, FALSE);
+    SetFocus(v->gl);
+}
+static LRESULT CALLBACK V3WarpEdSub(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref) {
+    (void)id; V3 *v = (V3 *)ref;
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) { V3WalkWarp(v); return 0; }
+    if (msg == WM_CHAR && (wp == '\r' || wp == '\n')) return 0;           // (no beep)
+    if (msg == WM_KEYDOWN && wp == VK_TAB) {                                // Tab: the next box
+        int k = 0; while (k < 3 && v->wEd[k] != h) k++;
+        HWND nx = v->wEd[(k + (GetKeyState(VK_SHIFT) < 0 ? 2 : 1)) % 3]; SetFocus(nx); SendMessageW(nx, EM_SETSEL, 0, -1); return 0;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
 // ---- collisions (stage 4): the body is an upright capsule (feet .. head, radius) in the tiles' solid triangles, on their ground
 static void V3ColVisit(V3 *v, float x, float z, float rad, void (*fn)(void *, const float *), void *ctx) {
     for (int t = 0; t < 6; t++) {
@@ -4456,14 +4620,8 @@ static void V3WalkStep(V3 *v) {
     v->wpos[0] += (sa * f + ca * r) * speed * dt;
     v->wpos[2] += (-ca * f + sa * r) * speed * dt;
     v->wpos[1] += u * speed * dt;
-    // keep inside the world's square, and never under the ground (no collisions yet: the ground only)
-    float ox = v->wGox, oz = v->wGoz, ext = v->wGst * (v->wGridW - 1);
-    if (v->wGridW > 1) {
-        if (v->wpos[0] < ox) v->wpos[0] = ox; if (v->wpos[0] > ox + ext) v->wpos[0] = ox + ext;
-        if (v->wpos[2] < oz) v->wpos[2] = oz; if (v->wpos[2] > oz + ext) v->wpos[2] = oz + ext;
-    }
-    int in = 0; float g = V3WalkGround(v, v->wpos[0], v->wpos[2], &in);
-    if (in && v->wpos[1] < g + v->wEye * 0.6f) v->wpos[1] = g + v->wEye * 0.6f;
+    // collisions off: free flight - through the ground, under the world and out past its 16000 x 16000 square (user,
+    // .242: to look at the islands drawn under their entrances); the tiles loaded stay the nearest ones inside the world
     V3WalkCheckArea(v);
     V3WalkInfo(v);
     InvalidateRect(v->gl, NULL, FALSE);
@@ -5559,8 +5717,8 @@ static void V3UpdateCoord(V3 *v, int mx, int my, int inside) {
             float bd = 14.0f * v->dpi / 96; bd *= bd;
             for (int i = 0; i < v->ncinst; i++) {
                 const struct V3CInst *c = &v->cinst[i]; const struct V3CPt *q = &v->cpt[c->cpt];
-                int mi = -1; for (int k = 0; k < v->ncoll; k++) if (v->coll[k].list == q->list) mi = v->coll[k].mat;
-                if (mi < 0 || v->hidden[mi]) continue;
+                int mi = c->mat; (void)q;
+                if (mi < 0 || mi >= VOX_MAXMAT || v->hidden[mi]) continue;
                 float P[3] = { c->A[0], c->A[1] + c->h * V3CollS(v), c->A[2] }, sx, sy;
                 if (!V3Project(v, P, &sx, &sy)) continue;
                 float d2 = (sx - mx) * (sx - mx) + (sy - my) * (sy - my); if (d2 < bd) { bd = d2; best = i; }
@@ -5674,7 +5832,7 @@ static void V3ListObjectsNear(V3 *v, float wx, float wz) {
             else if (V3AreaLabel(nm, &shA, ab)) snprintf(o->kind, sizeof o->kind, e && e->ent[0] ? "[drawn: %s]" : "[not drawn: not handled by the view]", e ? e->ent : "");
             else { char sh[VOX_MATN], kd[VOX_MATN]; V3ObjShort(nm, sh, sizeof sh); snprintf(kd, sizeof kd, "%s", !strncmp(nm, "Stage_", 6) ? nm + 6 : sh);
                    size_t L = strlen(kd); if (L > 3 && !strcmp(kd + L - 3, "_00")) kd[L - 3] = 0;
-                   snprintf(o->kind, sizeof o->kind, "[in the list as: Rainbow Road: %s]", kd); }
+                   snprintf(o->kind, sizeof o->kind, "[in the list as: Stage > Rainbow Road > %s]", kd); }
             wchar_t mp[2400]; o->model = V3ModelPath(v, root, nm, 0, mp, 2400);
             swprintf(o->mpath, 300, L"%ls", o->model ? mp : L"");
         }
@@ -5716,7 +5874,8 @@ static void V3ListObjectsNear(V3 *v, float wx, float wz) {
         if (n == cap) { Hit *nh = (Hit *)realloc(h, (size_t)cap * 2 * sizeof(Hit)); if (!nh) break; h = nh; cap *= 2; }
         Hit *o = h + n++; memset(o, 0, sizeof *o); o->d = d; o->x = q->T[0]; o->y = q->T[1]; o->z = q->T[2];
         snprintf(o->name, sizeof o->name, "%s", q->inm); swprintf(o->file, 96, L"%hs", q->island);
-        snprintf(o->kind, sizeof o->kind, "[drawn: Marker: %s, at the island's way in]", v->clist[q->list]);
+        if (V3CollName(v->clist[q->list])) snprintf(o->kind, sizeof o->kind, "[drawn: Collectable > %s, inside the drawn island]", V3CollName(v->clist[q->list]));
+        else snprintf(o->kind, sizeof o->kind, "[drawn: Marker: %s, at the island's way in]", v->clist[q->list]);
         int eo = swprintf(o->extra, 400, L"   [list: %hs] [inside %hs]", v->clist[q->list], q->island);
         if (q->ms[0]) { wchar_t ml[600]; V3MissionLine(v, q->ms, ml, 600); swprintf(o->extra + eo, 400 - eo, L"   [%ls]", ml); }
         o->model = 1;
@@ -6033,7 +6192,7 @@ static int V3CmpParts(const void *x, const void *y) {
     V3 *v = g_sortV; int a = *(const int *)x, b = *(const int *)y, r = 0;
     const char *na = a < v->part.nmat ? v->part.matName[a] : "", *nb = b < v->part.nmat ? v->part.matName[b] : "";
     switch (v->sortMode) {
-    case 0: r = v->part.matCount[a] < v->part.matCount[b] ? 1 : v->part.matCount[a] > v->part.matCount[b] ? -1 : 0; break;   // most first
+    case 0: r = v->listCnt[a] < v->listCnt[b] ? 1 : v->listCnt[a] > v->listCnt[b] ? -1 : 0; break;   // most first
     case 1: r = _stricmp(na, nb); break;
     case 2: r = a - b; break;
     case 3: r = V3PartGroup(v, a) - V3PartGroup(v, b); if (!r) r = _stricmp(na, nb); break;
@@ -6049,6 +6208,42 @@ static void V3Short(wchar_t *out, size_t n, double x) {
     else if (x < 9.95e6) swprintf(out, n, L"%.1fM", floor(x / 1e5) / 10);
     else if (x < 9.995e8) swprintf(out, n, L"%.0fM", floor(x / 1e6));
     else swprintf(out, n, L"%.1fB", floor(x / 1e8) / 10);
+}
+// an entry's own group under its group (a second level, user .244 / 23:00); 0: none, 1: only when 2 or more share it,
+// 2: always.
+//   "Island: <island>: <thing>" / "Stage: Rainbow Road: <thing>" -> "Island: <island>" / "Stage: Rainbow Road" (always)
+//   "Object: Tree..." -> "Object: Tree", for the user's list of name starts (always; Mob: cars, planes and boats)
+//   "Stage: WestCity_B" -> "Stage: WestCity" (the name up to its first "_")
+//   "Surface: LavaLake000_F - <part>" -> "Surface: LavaLake000_F" (the object, before " - " / " (")
+//   "Scenery: Rock003_A" -> "Scenery: Rock" (the name up to its first digit; "EditObj_RoadsideMesh_Game03_..." ->
+//   "Scenery: EditObj_RoadsideMesh")
+static int V3SubOf(const char *n, char out[VOX_MATN]) {
+    if (!strncmp(n, "Island: ", 8) || !strncmp(n, "Stage: Rainbow Road: ", 21) || !strncmp(n, "Collectable: ", 13)) {
+        const char *c = strstr(!strncmp(n, "Island: ", 8) ? n + 8 : !strncmp(n, "Collectable: ", 13) ? n + 13 : n + 7, ": "); if (!c) return 0;
+        snprintf(out, VOX_MATN, "%.*s", (int)(c - n), n); return 2;
+    }
+    if (!strncmp(n, "Object: ", 8)) {
+        static const char *const pre[] = { "AccelRing", "Airship", "Audience", "Citizen", "Curtain", "Dash", "Fence", "Flag", "Flower", "FoodShop", "Geyser", "Glide", "Guardrail", "Jump", "Lamp", "LapGate", "Mob", "Plant", "Start", "StreetLight", "TrafficSign", "Trampoline", "Tree", "Water" };   // (+ AccelRing...StreetLight: user .245)
+        for (size_t i = 0; i < sizeof pre / sizeof pre[0]; i++) if (!strncmp(n + 8, pre[i], strlen(pre[i]))) { snprintf(out, VOX_MATN, "Object: %s", pre[i]); return 2; }
+        return 0;
+    }
+    if (!strncmp(n, "Stage: ", 7)) {
+        const char *u = strchr(n + 7, '_'); if (!u || u == n + 7) return 0;
+        snprintf(out, VOX_MATN, "%.*s", (int)(u - n), n); return 1;
+    }
+    if (!strncmp(n, "Surface: ", 9)) {
+        const char *e = strstr(n + 9, " - "), *b = strstr(n + 9, " ("); if (!e || (b && b < e)) e = b; if (!e || e == n + 9) return 0;
+        snprintf(out, VOX_MATN, "%.*s", (int)(e - n), n); return 1;
+    }
+    if (!strncmp(n, "Scenery: ", 9)) {
+        const char *q = n + 9; while (*q && !(*q >= '0' && *q <= '9')) q++;
+        size_t L = (size_t)(q - n);
+        if (L > 5 && !strncmp(n + L - 5, "_Game", 5)) L -= 5;
+        while (L > 9 && (n[L - 1] == '_' || n[L - 1] == ' ')) L--;
+        if (L <= 9 || !*q) return 0;
+        snprintf(out, VOX_MATN, "%.*s", (int)L, n); return 1;
+    }
+    return 0;
 }
 // the group a list entry belongs to: the text before ": " ("Props: Coin" -> "Props"); terrain ground materials ->
 // "Ground"; otherwise its own name (so "Lava" joins "Lava: walls")
@@ -6105,7 +6300,42 @@ static LRESULT V3ListDraw(V3 *v, LPARAM lp) {
 /* The list as a tree: entries sharing a group ("Object: Coin000_A", "Object: StreetLight000_A"...) sit under one row for the
    group - its tick shows / hides them all (faded when only some are shown), its arrow column opens / closes it.
    An entry alone in its group is a row of its own. The chosen order decides where each group sits (its first entry). */
+// the list's count for each entry: its own triangles; walking: also every other kept tile's (by name - an entry only in
+// another tile is added here, empty, with its tick from the remembered ticks / the starting rules)
+static void V3ListCounts(V3 *v) {
+    VoxPart *p = &v->part;
+    for (int k = 0; k < VOX_MAXMAT; k++) v->listCnt[k] = k < p->nmat ? p->matCount[k] : 0;
+    if (!v->walk || !V3IsTerrainGrid(v)) return;
+    enum { HN = 16384 }; static short ht[HN];
+    for (int i = 0; i < HN; i++) ht[i] = -1;
+    for (int k = 0; k < p->nmat && k < VOX_MAXMAT; k++) { unsigned h = V3StrHash(p->matName[k]) & (HN - 1); while (ht[h] >= 0) h = (h + 1) & (HN - 1); ht[h] = (short)k; }
+    for (int t = 0; t < 6; t++) {
+        const struct V3Tile *T = &v->wTile[t];
+        if (!T->s.ok || !T->en || (T->tx == v->wLoadTx && T->tz == v->wLoadTz)) continue;   // (the tile just loaded: its own counts are p's)
+        for (int e = 0; e < T->nen; e++) {
+            unsigned h = V3StrHash(T->en[e]) & (HN - 1); int id = -1;
+            while (ht[h] >= 0) { if (!strcmp(p->matName[ht[h]], T->en[e])) { id = ht[h]; break; } h = (h + 1) & (HN - 1); }
+            if (id < 0) {
+                if (p->nmat >= VOX_MAXMAT - 2) continue;
+                id = p->nmat++; snprintf(p->matName[id], VOX_MATN, "%s", T->en[e]); p->matCount[id] = 0; p->startHidden[id] = 0;
+                ht[h] = (short)id; v->listCnt[id] = 0;
+                {   // a ground material ("30 CM00BaseGrass" / "ground material 30"): back in Ground (.246: they were plain rows)
+                    unsigned gk; int used = 0; p->terrMat[id] = -1;
+                    if (sscanf(T->en[e], "%u %n", &gk, &used) == 1 && used > 0 && gk < 62 && !strcmp(T->en[e] + used, kTeraMatNames[gk])) p->terrMat[id] = (int)gk;
+                    else if (sscanf(T->en[e], "ground material %u", &gk) == 1) p->terrMat[id] = (int)gk;
+                }
+                const char *n = p->matName[id]; char g[VOX_MATN]; V3MatCat(v, id, g);
+                v->hidden[id] = !strcmp(g, "Area") ? 1 : !strcmp(g, "Marker") ? (unsigned char)(strcmp(n, "Marker: PSwitch") && strcmp(n, "Marker: HatenaPanel") && strcmp(n, "Marker: SpecialCoin"))
+                              : (!strncmp(n, "Island: ", 8) || !strncmp(n, "Stage: Rainbow Road: marker ", 28)) ? 1 : 0;
+                for (int q = 0; q < v->nkeep; q++) if (!strcmp(v->keepName[q], n)) { v->hidden[id] = v->keepHidden[q]; break; }
+                for (int q = 0; q < v->nkg; q++) if (!strcmp(v->kgName[q], g)) { if (v->kgState[q] == 1) v->hidden[id] = 0; else if (v->kgState[q] == 2) v->hidden[id] = 1; break; }
+            }
+            v->listCnt[id] += T->ec[e];
+        }
+    }
+}
 static void V3FillList(V3 *v) {
+    v->rowTipItem = -2;                                       // (the rows change: the tooltip text is made again)
     v->fillingList = 1;
     int top = ListView_GetTopIndex(v->list);
     ListView_DeleteAllItems(v->list);
@@ -6116,7 +6346,8 @@ static void V3FillList(V3 *v) {
     wchar_t fw[100] = L""; char fa[100] = ""; if (v->findEd) { GetWindowTextW(v->findEd, fw, 100); WideCharToMultiByte(CP_UTF8, 0, fw, -1, fa, sizeof fa, NULL, NULL); }
     for (char *q = fa; *q; q++) *q = (char)tolower((unsigned char)*q);
     static int ids[VOX_MAXMAT]; int n = 0;
-    for (int i = 0; i < v->part.nmat && i < VOX_MAXMAT; i++) if (v->part.matCount[i]) {
+    V3ListCounts(v);
+    for (int i = 0; i < v->part.nmat && i < VOX_MAXMAT; i++) if (v->listCnt[i]) {
         if (fa[0]) {
             char nm[64]; snprintf(nm, sizeof nm, "%d %s", i, v->part.matName[i]);
             for (char *q = nm; *q; q++) *q = (char)tolower((unsigned char)*q);
@@ -6137,13 +6368,44 @@ static void V3FillList(V3 *v) {
     }
     for (int g = 0, s = 0; g < v->ngrp; g++) { v->grpStart[g] = s; s += v->grpN[g]; v->grpN[g] = 0; v->grpRow[g] = -1; }
     for (int i = 0; i < n; i++) { int g = gOf[i]; v->grpIds[v->grpStart[g] + v->grpN[g]++] = ids[i]; v->grpOfMat[ids[i]] = (short)g; }
+    // a second level (user .244): "Island: <island>: <thing>" - under Island, a group for each island. Its entries are put
+    // next to each other (in the order their islands first come) and the island's group is that run of grpIds.
+    v->ngrpTop = v->ngrp;
+    for (int g = 0; g < v->ngrpTop; g++) v->grpParent[g] = -1;
+    for (int g = 0; g < v->ngrpTop; g++) {
+        int s0 = v->grpStart[g], gn = v->grpN[g], any = 0;
+        static char key[VOX_MAXMAT][VOX_MATN]; static unsigned char kr[VOX_MAXMAT];
+        for (int k = 0; k < gn; k++) { kr[k] = (unsigned char)V3SubOf(v->part.matName[v->grpIds[s0 + k]], key[k]); if (!kr[k]) key[k][0] = 0; }
+        for (int k = 0; k < gn; k++) if (kr[k] == 1) {     // (only when 2 or more share it)
+            int c = 0; for (int j = 0; j < gn && c < 2; j++) if (kr[j] && !strcmp(key[j], key[k])) c++;
+            if (c < 2) { kr[k] = 0; key[k][0] = 0; }
+        }
+        for (int k = 0; k < gn && !any; k++) any = kr[k] != 0;
+        if (!any) continue;
+        static int tmp[VOX_MAXMAT]; static unsigned char used[VOX_MAXMAT]; int nt = 0;
+        for (int k = 0; k < gn; k++) used[k] = 0;
+        for (int k = 0; k < gn; k++) {
+            if (used[k]) continue;
+            const char *sk = key[k]; int hs = kr[k] != 0;
+            tmp[nt++] = v->grpIds[s0 + k]; used[k] = 1;
+            if (!hs) continue;
+            int sg = v->ngrp < VOX_MAXMAT ? v->ngrp++ : -1;
+            if (sg >= 0) { snprintf(v->grpName[sg], VOX_MATN, "%s", sk); v->grpStart[sg] = s0 + nt - 1; v->grpN[sg] = 1; v->grpRow[sg] = -1; v->grpParent[sg] = (short)g; v->grpSome[sg] = 0; v->grpOfMat[tmp[nt - 1]] = (short)sg; }
+            for (int j = k + 1; j < gn; j++) {
+                if (used[j] || !kr[j] || strcmp(key[j], sk)) continue;
+                tmp[nt++] = v->grpIds[s0 + j]; used[j] = 1;
+                if (sg >= 0) { v->grpN[sg]++; v->grpOfMat[tmp[nt - 1]] = (short)sg; }
+            }
+        }
+        memcpy(v->grpIds + s0, tmp, (size_t)gn * sizeof(int));
+    }
     // rows: a group of 2 or more -> its row (+ its entries when open, or while finding); otherwise the entry itself
     int nrow = 0, img = 0;
     // order of the groups: where their first entry falls; sorting by name: by the name shown (a group's own name -
     // its entries' names would put Ground, whose first is "Beach sand", before Cliffs)
-    static int gord[VOX_MAXMAT]; for (int g = 0; g < v->ngrp; g++) gord[g] = g;
+    static int gord[VOX_MAXMAT]; for (int g = 0; g < v->ngrpTop; g++) gord[g] = g;
     if (v->sortMode == 1)
-        for (int a = 1; a < v->ngrp; a++) {
+        for (int a = 1; a < v->ngrpTop; a++) {
             int t = gord[a], b = a - 1;
             const char *kt = v->grpN[t] > 1 ? v->grpName[t] : v->part.matName[v->grpIds[v->grpStart[t]]];
             while (b >= 0) {
@@ -6154,18 +6416,39 @@ static void V3FillList(V3 *v) {
             }
             gord[b + 1] = t;
         }
-    for (int gi = 0; gi < v->ngrp; gi++) {
+    for (int gi = 0; gi < v->ngrpTop; gi++) {
         int g = gord[gi];
-        int multi = v->grpN[g] > 1, open = multi && (fa[0] || V3IsExpanded(v, v->grpName[g]));
+        int hasSub = 0; for (int q = v->ngrpTop; q < v->ngrp && !hasSub; q++) hasSub = v->grpParent[q] == g;
+        int multi = v->grpN[g] > 1 || hasSub || strcmp(v->grpName[g], v->part.matName[v->grpIds[v->grpStart[g]]]), open = multi && (fa[0] || V3IsExpanded(v, v->grpName[g]));
+        int curSub = -1, subOpen = 0;
         for (int k = -1; k < v->grpN[g]; k++) {
-            if (k < 0 && !multi) continue;                  // (single entry: no group row)
+            if (k < 0 && !multi) continue;                  // (an entry that is its own group - "Water": no group row; a group of one - one Area - keeps its row: user .245)
             if (k >= 0 && multi && !open) break;
             int id = k < 0 ? v->grpIds[v->grpStart[g]] : v->grpIds[v->grpStart[g] + k];
+            int sg = k >= 0 && v->grpOfMat[id] != g ? v->grpOfMat[id] : -1;   // (an entry in one of the group's own groups)
+            if (sg >= 0 && sg != curSub) {                  // that group's own row first
+                curSub = sg; subOpen = fa[0] || V3IsExpanded(v, v->grpName[sg]);
+                unsigned char rgb[3]; VoxMatColour(&v->part, id, rgb);
+                HBITMAP bm = V3Swatch(sw, sw, rgb); ImageList_Add(il, bm, NULL); DeleteObject(bm);
+                wchar_t num[16], name[96], cnt[16]; uint64_t tot = 0;
+                for (int q = 0; q < v->grpN[sg]; q++) tot += v->listCnt[v->grpIds[v->grpStart[sg] + q]];
+                const char *c = strstr(v->grpName[sg], ": ");
+                swprintf(num, 16, L"%lc", subOpen ? 0x25BE : 0x25B8); swprintf(name, 96, L"%hs (%d)", c ? c + 2 : v->grpName[sg], v->grpN[sg]); V3Short(cnt, 16, (double)tot);
+                LVITEMW it; ZeroMemory(&it, sizeof(it));
+                it.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM | LVIF_INDENT; it.iItem = nrow; it.pszText = num; it.iImage = img++; it.lParam = -1 - sg; it.iIndent = 1;
+                int row = (int)SendMessageW(v->list, LVM_INSERTITEMW, 0, (LPARAM)&it);
+                LVITEMW st; ZeroMemory(&st, sizeof(st)); st.iSubItem = 1; st.pszText = name; SendMessageW(v->list, LVM_SETITEMTEXTW, row, (LPARAM)&st);
+                st.iSubItem = 2; st.pszText = cnt; SendMessageW(v->list, LVM_SETITEMTEXTW, row, (LPARAM)&st);
+                v->grpRow[sg] = row; v->listMat[nrow] = -1 - sg; v->grpSome[sg] = 0; V3SetGroupRow(v, sg);
+                nrow++;
+            }
+            if (sg < 0) curSub = -1;
+            if (sg >= 0 && !subOpen) continue;
             unsigned char rgb[3]; VoxMatColour(&v->part, id, rgb);
             HBITMAP bm = V3Swatch(sw, sw, rgb); ImageList_Add(il, bm, NULL); DeleteObject(bm);
             wchar_t num[16], name[96], cnt[16];
             if (k < 0) {                                    // the group's row
-                uint64_t tot = 0; for (int q = 0; q < v->grpN[g]; q++) tot += v->part.matCount[v->grpIds[v->grpStart[g] + q]];
+                uint64_t tot = 0; for (int q = 0; q < v->grpN[g]; q++) tot += v->listCnt[v->grpIds[v->grpStart[g] + q]];
                 swprintf(num, 16, L"%lc", open ? 0x25BE : 0x25B8);   // (down / right-pointing triangle)
                 swprintf(name, 96, L"%hs (%d)", v->grpName[g], v->grpN[g]);
                 V3Short(cnt, 16, (double)tot);
@@ -6173,12 +6456,13 @@ static void V3FillList(V3 *v) {
                 swprintf(num, 16, L"%d", id);
                 const char *nm = v->part.matName[id], *c = strstr(nm, ": ");
                 if (!nm[0]) swprintf(name, 96, L"(unnamed)");
+                else if (sg >= 0 && c && strstr(c + 2, ": ")) swprintf(name, 96, L"%hs", strstr(c + 2, ": ") + 2);   // (in an island's group: the thing's own name)
                 else swprintf(name, 96, L"%hs", multi && c ? c + 2 : nm);
-                V3Short(cnt, 16, (double)v->part.matCount[id]);
+                V3Short(cnt, 16, (double)v->listCnt[id]);
             }
             LVITEMW it; ZeroMemory(&it, sizeof(it));
             it.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM | LVIF_INDENT; it.iItem = nrow; it.pszText = num; it.iImage = img++;
-            it.lParam = k < 0 ? -1 - g : id; it.iIndent = k >= 0 && multi ? 1 : 0;
+            it.lParam = k < 0 ? -1 - g : id; it.iIndent = k >= 0 && multi ? (sg >= 0 ? 2 : 1) : 0;
             int row = (int)SendMessageW(v->list, LVM_INSERTITEMW, 0, (LPARAM)&it);
             LVITEMW st; ZeroMemory(&st, sizeof(st)); st.iSubItem = 1; st.pszText = name;
             SendMessageW(v->list, LVM_SETITEMTEXTW, row, (LPARAM)&st);
@@ -6225,7 +6509,14 @@ static void V3EntryTipEx(V3 *v, int row, wchar_t *out, int n, int maxNames) {
     }
     if (V3IsTerrainGrid(v) && v->fromPiece[lm])               // (only entries that really have triangles from them)
         o += swprintf(out + o, n - o, L"parts of the merged ground pieces (Model\\Piece_Gridify_Game03_X.._Z..)\n");
-    for (int c = 0; c < v->ncoll; c++) if (v->coll[c].mat == lm && o < n - 700) o += swprintf(out + o, n - o, L"%hs\n", v->coll[c].txt);
+    for (int c = 0; c < v->ncoll; c++) if (lm < VOX_MAXMAT && v->matList[lm] == v->coll[c].list && o < n - 700) o += swprintf(out + o, n - o, L"%hs\n", v->coll[c].txt);
+    for (int i = 0; i < v->ncinst && o < n - 800; i++) if (v->cinst[i].mat == lm && !strncmp(nm, "Collectable: ", 13)) {   // this one: where, its mission / sticker
+        const struct V3CPt *q = &v->cpt[v->cinst[i].cpt];
+        o += swprintf(out + o, n - o, L"this one: %.1f, %.1f, %.1f%hs%hs\n", q->T[0], q->T[1], q->T[2], q->island[0] ? " - inside " : "", q->island[0] ? q->island : "");
+        if (q->ms[0]) { wchar_t ml[600]; V3MissionLine(v, q->ms, ml, 600); o += swprintf(out + o, n - o, L"%ls\n", ml); }
+        if (q->stk[0]) o += swprintf(out + o, n - o, L"sticker %hs\n", q->stk);
+        break;
+    }
     // the placed objects the loader drew as this entry (by the game's object name)
     int shown = 0, more = 0; size_t L = strlen(nm);
     for (int i = 0; v->names && i < v->capNames; i++) {
@@ -6237,7 +6528,20 @@ static void V3EntryTipEx(V3 *v, int row, wchar_t *out, int n, int maxNames) {
     if (!o) swprintf(out, n, L"%hs", nm);
     else if (o > 0 && out[o - 1] == L'\n') out[o - 1] = 0;
 }
-static void V3EntryTip(V3 *v, int row, wchar_t *out, int n) { V3EntryTipEx(v, row, out, n, 16); }
+static void V3EntryTip(V3 *v, int row, wchar_t *out, int n) {
+    V3EntryTipEx(v, row, out, n, 16);
+    if (row < 0 || row >= v->nlist) return;
+    int lm = v->listMat[row];
+    const char *nm = lm >= 0 ? v->part.matName[lm] : v->grpName[-1 - lm];   // an island (its group or one of its things): where to find it
+    if (strncmp(nm, "Island: ", 8)) return;
+    const char *c = strstr(nm + 8, ": "); size_t L = c ? (size_t)(c - nm - 8) : strlen(nm + 8);
+    for (int i = 0; i < v->nislName; i++) if (strlen(v->islName[i]) == L && !strncmp(nm + 8, v->islName[i], L)) {
+        int o = (int)wcslen(out);
+        if (o < n - 300) swprintf(out + o, n - o, L"\nTunnel entrance: x %.0f, z %.0f (height %.0f). Drawn under it, its origin at height %.0f - the place is ours (the game loads an island as a scene of its own).",
+                                  v->islPos[i][0], v->islPos[i][2], v->islPos[i][1], v->islPos[i][3]);
+        break;
+    }
+}
 // right-click an entry: everything it draws, in a window whose text can be copied - the placed objects (all of them)
 // and the ground-piece parts' own names
 static void V3EntryList(V3 *v, int row) {
@@ -6253,13 +6557,13 @@ static void V3EntryList(V3 *v, int row) {
         for (const char *q = v->pieceTxt[lm]; *q && (size_t)o < cap - 4; q++) { if (*q == '\n') t[o++] = L'\r'; t[o++] = (wchar_t)(unsigned char)*q; }
         t[o] = 0;
     }
-    for (int c = 0; c < v->ncoll; c++) if (v->coll[c].mat == lm) {      // a collectible list: every one of them
+    for (int c = 0; c < v->ncoll; c++) if (lm < VOX_MAXMAT && v->matList[lm] == v->coll[c].list) {      // a collectible list: every one of them
         HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT));
         o += swprintf(t + o, cap - o, L"\r\n\r\nEvery one in the list (x, y (height), z, then its mission or sticker):\r\n");
         for (int i = 0; i < v->ncpt && (size_t)o < cap - 1000; i++) {
             const struct V3CPt *q = &v->cpt[i]; if (q->list != v->coll[c].list) continue;
             o += swprintf(t + o, cap - o, L"%.1f, %.1f, %.1f", q->T[0], q->T[1], q->T[2]);
-            if (q->island[0] && !q->noPos) o += swprintf(t + o, cap - o, L"   (inside %hs: shown at its way in)", q->island);
+            if (q->island[0] && !q->noPos) o += swprintf(t + o, cap - o, V3CollName(v->clist[q->list]) ? L"   (inside %hs: drawn in the island, as the island's own model)" : L"   (inside %hs: shown at its way in)", q->island);
             else if (q->island[0]) o += swprintf(t + o, cap - o, L"   (inside %hs: its way in isn't known - not drawn)", q->island);
             else if (!q->placed && fabsf(q->T[0]) < 300 && fabsf(q->T[2]) < 300 && fabsf(q->T[1]) < 50) o += swprintf(t + o, cap - o, L"   (not found in the placement files, and looks like an island's own coordinates - not drawn)");
             else if (!q->placed) o += swprintf(t + o, cap - o, L"   (no placed object found at this spot - drawn at the list's position, unturned)");
@@ -6277,7 +6581,21 @@ static void V3EntryList(V3 *v, int row) {
 }
 // the list's tooltips: shown only once the mouse has rested a while, gone as soon as it moves
 static LRESULT CALLBACK V3ListSub(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref) {
-    (void)id; (void)ref;
+    (void)id;
+    V3 *v = (V3 *)ref;
+    if (msg == WM_MOUSEMOVE && v && v->rowTip) {             // the tooltip follows the row under the pointer (any column)
+        LVHITTESTINFO hi; ZeroMemory(&hi, sizeof hi); hi.pt.x = (short)LOWORD(lp); hi.pt.y = (short)HIWORD(lp);
+        int it = ListView_SubItemHitTest(h, &hi); if (it < 0 || hi.iItem < 0) it = -1;
+        if (it != v->rowTipItem) {
+            static wchar_t buf[8192]; buf[0] = 0;
+            v->rowTipItem = it;
+            SendMessageW(v->rowTip, TTM_POP, 0, 0);
+            if (it >= 0) V3EntryTip(v, it, buf, 8192);
+            TOOLINFOW ti; ZeroMemory(&ti, sizeof ti); ti.cbSize = TTTOOLINFOW_V2_SIZE; ti.hwnd = h; ti.uId = 1; ti.lpszText = buf;
+            SendMessageW(v->rowTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);   // (empty: no tooltip there)
+        }
+    }
+    if (msg == WM_MOUSELEAVE && v) v->rowTipItem = -2;       // (back over the same row later: its text again, the list may have changed)
     if (msg == WM_MOUSEMOVE) {
         static LPARAM last = -1;
         if (lp != last) { last = lp; HWND tt = ListView_GetToolTips(h); if (tt && IsWindowVisible(tt)) SendMessageW(tt, TTM_POP, 0, 0); }
@@ -6321,12 +6639,19 @@ static void V3ListTicked(V3 *v, int row, int oldState, int newState) {
     v->fillingList = 1;
     if (lm < 0) {                                           // a group: from all shown -> hide all; from none / some -> show all
         int g = -1 - lm, show = oldState != 2 || v->grpSome[g]; (void)newState;
-        V3KgSet(v, v->grpName[g], show ? 1 : 2);
-        for (int k = 0; k < v->grpN[g]; k++) { int id = v->grpIds[v->grpStart[g] + k]; v->hidden[id] = (unsigned char)!show; if (v->matRow[id] >= 0) ListView_SetCheckState(v->list, v->matRow[id], show); }
-        V3SetGroupRow(v, g);
+        int par = g < v->ngrp ? v->grpParent[g] : -1;
+        if (par < 0) V3KgSet(v, v->grpName[g], show ? 1 : 2);
+        else for (int q = 0; q < v->nkg; q++) if (!strcmp(v->kgName[q], v->grpName[par])) v->kgState[q] = 0;   // (one island: its group is mixed now)
+        for (int k = 0; k < v->grpN[g]; k++) {
+            int id = v->grpIds[v->grpStart[g] + k]; v->hidden[id] = (unsigned char)!show; if (v->matRow[id] >= 0) ListView_SetCheckState(v->list, v->matRow[id], show);
+            if (par >= 0) V3KeepSet(v, v->part.matName[id], v->hidden[id]);                // (an island's: remembered by name)
+        }
+        V3SetGroupRow(v, g); if (par >= 0) V3SetGroupRow(v, par);
+        for (int q = v->ngrpTop; q < v->ngrp; q++) if (v->grpParent[q] == g) V3SetGroupRow(v, q);   // (the islands under Island)
     } else {
         v->hidden[lm] = (unsigned char)(newState != 2);
         V3SetGroupRow(v, v->grpOfMat[lm]);
+        { int gp = v->grpOfMat[lm] >= 0 ? v->grpParent[v->grpOfMat[lm]] : -1; if (gp >= 0) V3SetGroupRow(v, gp); }
         char g[VOX_MATN]; V3MatCat(v, lm, g);
         for (int q = 0; q < v->nkg; q++) if (!strcmp(v->kgName[q], g)) v->kgState[q] = 0;   // (one thing on its own: the group is mixed now)
         V3KeepSet(v, v->part.matName[lm], v->hidden[lm]);                                    // (remembered by name at once)
@@ -6344,6 +6669,10 @@ static void V3Layout(V3 *v) {
     int infoH = V3S(v, v->nCloth ? 150 : 128);
     MoveWindow(v->info, m, y, pw, infoH, TRUE); y += infoH + gap;
     if (IsWindowVisible(v->lod)) { MoveWindow(v->lod, m, y, pw, rh, TRUE); y += rh + gap; }
+    if (IsWindowVisible(v->resSl)) {
+        MoveWindow(v->resLbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
+        MoveWindow(v->resSl, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
+    }
     if (IsWindowVisible(v->walkCb)) { MoveWindow(v->walkCb, m, y, pw, rh, TRUE); y += rh + gap; }
     if (IsWindowVisible(v->collCb)) { MoveWindow(v->collCb, m, y, pw, rh, TRUE); y += rh + gap; }
     if (IsWindowVisible(v->wDetSl)) {                     // walking: how far full detail reaches
@@ -6390,7 +6719,7 @@ static void V3Layout(V3 *v) {
         MoveWindow(v->play, m, y, pb, rh, TRUE); MoveWindow(v->speedCb, m + pb + gap, y, sb, V3S(v, 200), TRUE);
         MoveWindow(v->frame, m + pb + sb + 2 * gap, y, pw - pb - sb - 2 * gap, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
         if (v->ncol) { MoveWindow(v->colCb, m, y, pw, V3S(v, 400), TRUE); y += rh + gap; }
-    } else if (!v->walk) {
+    } else if (!v->walk && !v->loadUI) {                  // (walking, or a load running: no cut)
         ShowWindow(v->cutlbl, SW_SHOW); ShowWindow(v->cut, SW_SHOW);
         MoveWindow(v->cutlbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
         MoveWindow(v->cut, m, y, pw, rh + V3S(v, 4), TRUE); y += rh + V3S(v, 4) + gap;
@@ -6406,12 +6735,24 @@ static void V3Layout(V3 *v) {
     MoveWindow(v->matlbl, m, y + V3S(v, 3), pw, rh - V3S(v, 3), TRUE); y += rh;
     {   int sb2 = V3S(v, 150);                          // sort order + find box
         MoveWindow(v->sortCb, m, y, sb2, V3S(v, 200), TRUE); MoveWindow(v->findEd, m + sb2 + gap, y, pw - sb2 - gap, rh, TRUE); y += rh + gap; }
-    int helpH = V3S(v, 40);
+    int helpH = v->walk ? V3S(v, 22) + rh + V3S(v, 4) : V3S(v, 40);     // (walking: the walking line + the x / y / z boxes)
     int bw = (pw - gap) / 2;
     int listH = rc.bottom - y - m - rh - gap - helpH - gap; if (listH < V3S(v, 60)) listH = V3S(v, 60);
     MoveWindow(v->list, m, y, pw, listH, TRUE); y += listH + gap;
     MoveWindow(v->all, m, y, bw, rh, TRUE); MoveWindow(v->none, m + bw + gap, y, bw, rh, TRUE); y += rh + gap;
-    MoveWindow(v->coord, m, y, pw, helpH, TRUE);          // the place under the cursor
+    if (v->walk && v->wEd[0]) {                           // walking: the walking line, then the x / y / z warp boxes
+        MoveWindow(v->coord, m, y, pw, V3S(v, 22), TRUE);
+        int ly = y + V3S(v, 22) + V3S(v, 4), lw = V3S(v, 14), cw = (pw - 3 * lw - 2 * gap) / 3;
+        for (int k = 0; k < 3; k++) {
+            int x0 = m + k * (lw + cw + gap);
+            MoveWindow(v->wEdL[k], x0, ly + V3S(v, 3), lw - V3S(v, 3), rh - V3S(v, 3), TRUE);
+            MoveWindow(v->wEd[k], x0 + lw, ly, cw, rh, TRUE);
+            ShowWindow(v->wEdL[k], SW_SHOW); ShowWindow(v->wEd[k], SW_SHOW);
+        }
+    } else {
+        MoveWindow(v->coord, m, y, pw, helpH, TRUE);      // the place under the cursor
+        for (int k = 0; k < 3; k++) if (v->wEd[k]) { ShowWindow(v->wEdL[k], SW_HIDE); ShowWindow(v->wEd[k], SW_HIDE); }
+    }
     ShowWindow(v->help, SW_HIDE);
     // list columns: # (an indented tick, swatch and 3 digits) and the count keep their width (dragged ones too),
     // the name takes the rest
@@ -6459,7 +6800,10 @@ static char *V3ViewText(V3 *v) {
     wchar_t key[4200]; V3ViewKey(v, key, 4200);
     char k8[8400]; WideCharToMultiByte(CP_UTF8, 0, key, -1, k8, sizeof k8, NULL, NULL);
     o += snprintf(t + o, cap - o, "ns2dig view 1\nkey %s\nlod %d\novl %d\ncut %d\ncam %.6g %.6g %.6g %.6g %.6g\n", k8, v->lodSel, v->ovlSel, v->cutPos, v->yaw, v->pitch, v->dist, v->panx, v->pany);
+    if (V3IsTerrainGrid(v)) o += snprintf(t + o, cap - o, "res %d\n", V3ResPos(v));                  // (terrain: the resolution slider)
     if (v->ncinst && V3CollS(v) != 1) o += snprintf(t + o, cap - o, "csize %g\n", V3CollS(v));      // (the collectibles' size)
+    if (IsWindowVisible(v->wRipSl)) o += snprintf(t + o, cap - o, "wrip %g\nwrsp %g\n", v->wRip, v->wRsp);   // (the water sliders)
+    if (v->animSel > 0 && !v->playing) o += snprintf(t + o, cap - o, "frame %d\n", (int)v->animFrame);       // (a paused animation's frame)
     {   int a = ListView_GetColumnWidth(v->list, 0), c = ListView_GetColumnWidth(v->list, 2);
         o += snprintf(t + o, cap - o, "panel %d\ncol0 %d\ncol2 %d\n", v->panelW96, a > 0 ? MulDiv(a, 96, v->dpi) : v->col0W96, c > 0 ? MulDiv(c, 96, v->dpi) : v->col2W96); }
     for (size_t i = 0; i < sizeof kV3SavedCtl / sizeof kV3SavedCtl[0]; i++) {
@@ -6515,6 +6859,16 @@ static void V3RestorePass(V3 *v) {
     int hc = 0;
     {   const char *q = strstr(t, "\ncsize "); float cs;            // the collectibles' size
         if (q && sscanf(q + 7, "%f", &cs) == 1 && cs >= 1 && cs <= 100 && cs != V3CollS(v) && v->ncinst) { v->collScale = cs; V3CollApplyScale(v); V3CollTexts(v); V3CollSliderSync(v); hc = 1; } }
+    {   float wr, ws; const char *q;                          // the water sliders (views saved from .238 on)
+        if ((q = strstr(t, "\nwrip ")) && sscanf(q + 6, "%f", &wr) == 1 && wr >= 20 && wr <= 400) {
+            v->wRip = roundf(wr / 10) * 10; SendMessageW(v->wRipSl, TBM_SETPOS, TRUE, (LPARAM)(v->wRip / 10)); V3WaterRipLabel(v); }
+        if ((q = strstr(t, "\nwrsp ")) && sscanf(q + 6, "%f", &ws) == 1 && ws >= 0 && ws <= 20) {
+            v->wRsp = roundf(ws); SendMessageW(v->wRspSl, TBM_SETPOS, TRUE, (LPARAM)v->wRsp); V3WaterSpdLabel(v); }
+    }
+    {   int fr;                                               // a paused animation's frame (after the animation itself is back)
+        if (V3SavedInt(t, "frame", &fr) && v->animSel > 0 && fr >= 0 && fr < (v->anim.frames > 0 ? v->anim.frames : 1) && (int)v->animFrame != fr) {
+            v->playing = 0; v->animFrame = (float)fr; SendMessageW(v->frame, TBM_SETPOS, TRUE, fr); V3ApplyPose(v); V3UpdateFrameLabel(v); }
+    }
     for (const char *q = strstr(t, "\nhide "); q; q = strstr(q + 1, "\nhide ")) {
         int hid = q[6] == '1'; const char *nm = q + 8; const char *e = strchr(nm, '\n'); size_t L = e ? (size_t)(e - nm) : strlen(nm);
         for (int k = 0; k < v->part.nmat && k < VOX_MAXMAT; k++)
@@ -6543,8 +6897,29 @@ static int V3AskSaveOnClose(V3 *v) {
     if (r == 1 && !V3SaveView(v)) MessageBoxW(v->wnd, L"The view couldn't be saved (the saved_views folder beside ns2dig.exe couldn't be written).", L"Save the view", MB_OK | MB_ICONWARNING);
     return 1;
 }
+// while a part / the map loads: no resolution box or slider and no cut (they'd act on something not there yet), and the
+// buttons greyed (Controls, Reset, Top, Save, the exports, Show / Hide all, the walk / landmark / prop boxes) - .239 had
+// them all live during the load. Back when the load is done (V3BusyOff); the box / slider then as the loaded part needs.
+static void V3Layout(V3 *v);
+static void V3LoadUI(V3 *v, int on) {
+    v->loadUI = on;
+    HWND b[] = { v->ctlBtn, v->reset, v->topb, v->saveb, v->exportb, v->pngb, v->all, v->none, v->walkCb, v->lmCb, v->propCb };
+    for (size_t i = 0; i < sizeof b / sizeof b[0]; i++) if (b[i]) EnableWindow(b[i], !on);
+    if (on) {
+        if (v->lod) ShowWindow(v->lod, SW_HIDE);
+        // terrain views keep the resolution slider while loading (user, .240): moving it stops this load (cancel checks)
+        // and loads the new resolution at once; walking has none
+        if (v->resLbl) {
+            int keep = V3IsTerrainGrid(v) && !v->walk;
+            ShowWindow(v->resLbl, keep ? SW_SHOW : SW_HIDE); ShowWindow(v->resSl, keep ? SW_SHOW : SW_HIDE);
+            if (keep) { EnableWindow(v->resSl, TRUE); SendMessageW(v->resSl, TBM_SETPOS, TRUE, V3ResPos(v)); V3ResLabel(v); }
+        }
+    }
+    if (v->lod) V3Layout(v);
+}
 static void V3BusyOff(V3 *v) {
     v->busyOn = 0;
+    if (v->loadUI) V3LoadUI(v, 0);
     if (v->ldText) { ShowWindow(v->ldText, SW_HIDE); ShowWindow(v->ldBar, SW_HIDE); }
 }
 static void V3BusyUpdate(V3 *v) {
@@ -6595,6 +6970,10 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         v->wnd = hwnd;
         v->info  = V3Ctl(v, L"EDIT", L"Loading...", ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, 0, V3_INFO);   // scrolls when the text is longer than the box
         v->lod   = V3Ctl(v, L"BUTTON", L"Low resolution (faster - untick for full detail)", BS_AUTOCHECKBOX | WS_TABSTOP, 0, V3_LOD);
+        v->resLbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_RESLBL);             // terrain views: the resolution slider (in place of the box)
+        v->resSl  = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 0, V3_RES);
+        SendMessageW(v->resSl, TBM_SETRANGE, TRUE, MAKELPARAM(0, 2)); SendMessageW(v->resSl, TBM_SETPOS, TRUE, V3ResPos(v));
+        ShowWindow(v->resLbl, SW_HIDE); ShowWindow(v->resSl, SW_HIDE);
         v->cutlbl = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_CUTLBL);
         v->cut   = V3Ctl(v, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 0, V3_CUT);
         SendMessageW(v->cut, TBM_SETRANGE, TRUE, MAKELPARAM(0, 1000));
@@ -6707,11 +7086,24 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         v->findEd = V3Ctl(v, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, V3_FIND);
         SendMessageW(v->findEd, EM_SETCUEBANNER, TRUE, (LPARAM)L"Find a part...");
         v->list  = V3Ctl(v, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_TABSTOP, WS_EX_CLIENTEDGE, V3_LIST);
-        ListView_SetExtendedListViewStyle(v->list, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);   // (tooltips: the game's names)
+        ListView_SetExtendedListViewStyle(v->list, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);   // (tooltips: our own, below)
         SetPropW(v->list, L"ns2digOwnCol0", (HANDLE)1);
         {   HWND tt = ListView_GetToolTips(v->list);           // tooltips: after 1.2 s of the mouse resting on an entry
             if (tt) { SendMessageW(tt, TTM_SETDELAYTIME, TTDT_INITIAL, 1200); SendMessageW(tt, TTM_SETDELAYTIME, TTDT_RESHOW, 1200); SendMessageW(tt, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000); }
-            SetWindowSubclass(v->list, V3ListSub, 31, 0); }   // (the first column opens groups: the skin's row click leaves it alone)
+            SetWindowSubclass(v->list, V3ListSub, 31, (DWORD_PTR)v); }   // (the first column opens groups: the skin's row click leaves it alone)
+        {   // the entries' tooltips (the game's names, what an entry draws...) over the whole row - the list's own info tips only
+            // came over the # column: one tool covering the list, its text set for the row under the pointer (V3ListSub)
+            v->rowTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, 0, 0, 0, 0, v->wnd, NULL, GetModuleHandleW(NULL), NULL);
+            v->rowTipItem = -2;
+            if (v->rowTip) {
+                TOOLINFOW ti; ZeroMemory(&ti, sizeof ti); ti.cbSize = TTTOOLINFOW_V2_SIZE; ti.uFlags = TTF_SUBCLASS; ti.hwnd = v->list; ti.uId = 1;
+                ti.rect.right = 32000; ti.rect.bottom = 32000; ti.lpszText = (LPWSTR)L"";
+                SendMessageW(v->rowTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+                SendMessageW(v->rowTip, TTM_SETMAXTIPWIDTH, 0, V3S(v, 520));               // (several lines)
+                SendMessageW(v->rowTip, TTM_SETDELAYTIME, TTDT_INITIAL, 1200); SendMessageW(v->rowTip, TTM_SETDELAYTIME, TTDT_RESHOW, 1200);
+                SendMessageW(v->rowTip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000);
+            }
+        }
         { LVCOLUMNW c; ZeroMemory(&c, sizeof(c)); c.mask = LVCF_WIDTH | LVCF_TEXT; c.cx = 60; c.pszText = (LPWSTR)L"#";
           SendMessageW(v->list, LVM_INSERTCOLUMNW, 0, (LPARAM)&c);
           c.cx = 150; c.pszText = (LPWSTR)L"Material"; SendMessageW(v->list, LVM_INSERTCOLUMNW, 1, (LPARAM)&c);
@@ -6721,6 +7113,14 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         v->help = V3Ctl(v, L"STATIC", L"", SS_LEFT, 0, V3_HELP);   // (kept hidden: the Controls window has the hints)
         v->ctlBtn = V3Ctl(v, L"BUTTON", L"Controls", BS_PUSHBUTTON | WS_TABSTOP, 0, V3_CTLBTN);
         v->coord = V3Ctl(v, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 0, V3_COORD);
+        {   static const wchar_t *const ln[3] = { L"x", L"y", L"z" };       // walking: the warp boxes (shown while walking)
+            for (int k = 0; k < 3; k++) {
+                v->wEdL[k] = V3Ctl(v, L"STATIC", ln[k], SS_RIGHT | SS_NOPREFIX, 0, V3_WXL + k);
+                v->wEd[k] = V3Ctl(v, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP | WS_BORDER, 0, V3_WX + k);
+                SetWindowSubclass(v->wEd[k], V3WarpEdSub, 41, (DWORD_PTR)v);
+                ShowWindow(v->wEdL[k], SW_HIDE); ShowWindow(v->wEd[k], SW_HIDE);
+            }
+        }
         v->arrowHot = -1; v->prbHot = -1; v->sndHot = -1;
         v->gl = CreateWindowExW(WS_EX_CLIENTEDGE, L"AlsarcVox3DGL", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                                 0, 0, 10, 10, hwnd, NULL, GetModuleHandleW(NULL), NULL);
@@ -6792,6 +7192,11 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_V3_LOADED:
         if (v->thread) { WaitForSingleObject(v->thread, INFINITE); CloseHandle(v->thread); v->thread = NULL; }
         v->loading = 0;
+        if (v->reloadPending) {                            // the resolution changed while loading: this load stopped part-way -
+            v->reloadPending = 0;                           // straight on to the new one (no mesh of the half-loaded world)
+            V3ReloadWorld(v);
+            return 0;
+        }
         if (!lp) {
             KillTimer(hwnd, V3_TIMER_PROGRESS); V3BusyOff(v);
             swprintf(v->status, 256, L"Couldn't load this part:\r\n%hs", v->part.err);
@@ -6822,7 +7227,8 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     v->hidden[k] = !strcmp(g, "Area") ? 1 : (v->walk && !strcmp(g, "Marker")) ? (unsigned char)(strcmp(n, "Marker: PSwitch") && strcmp(n, "Marker: HatenaPanel") && strcmp(n, "Marker: SpecialCoin")) : 0;
                     // Rainbow Road's things without a model (SystemObj_RainbowChangeSpace: huge boxes - the switch between the world
                     // and the course; seen as solid blue sheets and blocks around the track in .221): unticked at first, like Marker
-                    if (!strncmp(n, "Rainbow Road: marker ", 21)) v->hidden[k] = 1;
+                    if (!strncmp(n, "Stage: Rainbow Road: marker ", 28)) v->hidden[k] = 1;
+                    if (!strncmp(n, "Island: ", 8)) v->hidden[k] = 1;       // the islands (under their entrances): unticked at first
                 }
                 for (int q = 0; q < v->nkeep; q++) if (!strcmp(v->keepName[q], v->part.matName[k])) { v->hidden[k] = v->keepHidden[q]; break; }   // as it was before reloading
                 if (v->kgName) {                                   // a whole group ticked / unticked: everything in it follows (also things met before)
@@ -6844,7 +7250,10 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // the voxel material 0 ("Invalid") and the editor-only "Collision..." materials start hidden? keep all visible
         SendMessageW(v->lod, BM_SETCHECK, v->lodSel == 2 ? BST_CHECKED : BST_UNCHECKED, 0);
         { int has = !v->part.isTriMesh || V3IsTerrainGrid(v) || v->part.isModel;     // a ready-made mesh: nothing to reduce, so no box
-          ShowWindow(v->lod, has ? SW_SHOW : SW_HIDE); EnableWindow(v->lod, has); V3Layout(v); }    // (terrain grids reload with smaller tiles)
+          int tg = V3IsTerrainGrid(v);                                          // terrain: the resolution slider instead of the box
+          ShowWindow(v->lod, has && !tg && !v->walk ? SW_SHOW : SW_HIDE); EnableWindow(v->lod, has);
+          ShowWindow(v->resLbl, tg && !v->walk ? SW_SHOW : SW_HIDE); ShowWindow(v->resSl, tg && !v->walk ? SW_SHOW : SW_HIDE);
+          SendMessageW(v->resSl, TBM_SETPOS, TRUE, V3ResPos(v)); V3ResLabel(v); V3Layout(v); }   // (walking: always full detail around you - no box; .237 showed it again after the load)    // (terrain grids reload with smaller tiles)
         V3FillList(v);
         if (v->part.isTriMesh) {                                    // columns: name / triangles
             LVCOLUMNW c; ZeroMemory(&c, sizeof(c)); c.mask = LVCF_TEXT;
@@ -6899,7 +7308,6 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             else if (v->wStartPending && !v->walk) { v->wStartPending = 0; v->wTicksDone = 1; swprintf(v->status, 256, L""); V3WalkStart(v); }   // (the world built with the walk's ticks: go)   // walking: the mesh becomes a tile; on to the next
             if (v->animSel > 0) V3ApplyPose(v);
             swprintf(v->status, 256, v->useVbo ? L"" : L"(Using basic OpenGL - rotating may be slow.)");
-            if (v->part.gridW > 1 && v->part.terrWorld[2] > 0 && v->useVbo) swprintf(v->status, 256, L"Right-click the ground to open that area in full detail.");
         } else swprintf(v->status, 256, L"Building the surface failed (out of memory?) - try Low resolution.");
         V3UpdateInfo(v);
         InvalidateRect(v->gl, NULL, FALSE);
@@ -6910,7 +7318,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         V3Export *e = (V3Export *)lp;
         if (v->exportThread) { WaitForSingleObject(v->exportThread, INFINITE); CloseHandle(v->exportThread); v->exportThread = NULL; }
         v->exporting = 0;
-        EnableWindow(v->exportb, TRUE); EnableWindow(v->lod, TRUE); EnableWindow(v->list, TRUE);
+        EnableWindow(v->exportb, TRUE); EnableWindow(v->lod, !v->walk); EnableWindow(v->list, TRUE);
         EnableWindow(v->all, TRUE); EnableWindow(v->none, TRUE);
         if (e->ok) {
             wchar_t n[64]; V3Num(n, 64, (double)e->tris);
@@ -6942,6 +7350,16 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if ((HWND)lp == v->frame && v->animSel > 0) {
             v->playing = 0; v->animFrame = (float)SendMessageW(v->frame, TBM_GETPOS, 0, 0);
             V3ApplyPose(v); V3UpdateFrameLabel(v); InvalidateRect(v->gl, NULL, FALSE);
+            return 0;
+        }
+        if ((HWND)lp == v->resSl) {                        // terrain: the resolution (loads again when let go)
+            int pos = (int)SendMessageW(v->resSl, TBM_GETPOS, 0, 0); if (pos < 0) pos = 0; if (pos > 2) pos = 2;
+            if (LOWORD(wp) == TB_THUMBTRACK) {                // (while dragging: the label only)
+                int ol = v->lodSel, of = v->resFull; v->lodSel = pos ? 1 : 2; v->resFull = pos == 2; V3ResLabel(v); v->lodSel = ol; v->resFull = of;
+                return 0;
+            }
+            if (pos != V3ResPos(v)) { v->lodSel = pos ? 1 : 2; v->resFull = pos == 2; V3ResLabel(v); if (V3IsTerrainGrid(v)) V3ReloadWorld(v); }
+            SetFocus(v->gl);
             return 0;
         }
         if ((HWND)lp == v->wRipSl) {                       // terrain water: the ripple size (at once - the shader reads it every frame)
@@ -7153,7 +7571,7 @@ static LRESULT CALLBACK V3Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // stop the worker and timers now; free everything in WM_NCDESTROY, after the child controls are gone
         KillTimer(hwnd, V3_TIMER_PROGRESS); KillTimer(hwnd, V3_TIMER_REBUILD); KillTimer(hwnd, V3_TIMER_ANIM); KillTimer(hwnd, V3_TIMER_CSIZE); KillTimer(hwnd, V3_TIMER_WALK); if (v->wCap) { ClipCursor(NULL); ShowCursor(TRUE); v->wCap = 0; }
         V3WalkTilesFree(v); V3SnapFree(v, &v->wBack); free(v->wGrid); v->wGrid = NULL;
-        if (v->thread) { v->cancel = 1; WaitForSingleObject(v->thread, 15000); CloseHandle(v->thread); v->thread = NULL; }
+        if (v->thread) { v->cancel = 1; WaitForSingleObject(v->thread, INFINITE); CloseHandle(v->thread); v->thread = NULL; }   // (it stops soon: cancel checks; never free under it)
         if (v->exportThread) { v->cancel = 1; WaitForSingleObject(v->exportThread, 60000); CloseHandle(v->exportThread); v->exportThread = NULL; }
         // GL: the drawing area still exists at this point (children are destroyed after this message)
         if (v->rc) {
@@ -7214,7 +7632,8 @@ void Vox3DOpen(HWND owner, const wchar_t *partDir, const wchar_t *geomJson, cons
     v->restoreTxt = V3ReadSavedView(v);             // a saved view: put back once loaded (resolution and ground layer now)
     if (v->restoreTxt) {
         int lod, ovl; v->restoreLeft = 8;
-        if (V3SavedInt(v->restoreTxt, "lod", &lod) && (lod == 1 || lod == 2)) v->lodSel = lod;
+        if (V3SavedInt(v->restoreTxt, "lod", &lod) && (lod == 1 || lod == 2)) v->lodSel = lod;   // (older saves: ticked = low, unticked = high)
+        int res; if (V3SavedInt(v->restoreTxt, "res", &res) && res >= 0 && res <= 2) { v->lodSel = res ? 1 : 2; v->resFull = res == 2; }   // the resolution slider
         int pw, c0, c2;                                  // the panel and list column widths, before the window is laid out
         if (V3SavedInt(v->restoreTxt, "panel", &pw) && pw >= 200 && pw <= 2000) v->panelW96 = pw;
         if (V3SavedInt(v->restoreTxt, "col0", &c0) && c0 >= 20 && c0 <= 600) v->col0W96 = c0;

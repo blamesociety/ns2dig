@@ -27,7 +27,8 @@ every viewer without a game dump. Nothing in it comes from any game.
 ## Download
 
 Get the latest `ns2dig.zip` from the [Releases](../../releases) page, unzip it anywhere, and read
-`README.txt` inside for setup (you need Python 3 for the scanner). To try it straight away, scan the
+`README.txt` inside for setup (you need Python 3 for the scanner). If your ROM dump is in NUP format
+then use https://github.com/a55uka/nup to extract it first. To try it straight away, scan the
 `demo` folder.
 
 ## Repository layout
